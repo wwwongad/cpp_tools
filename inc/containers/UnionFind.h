@@ -1,6 +1,3 @@
-//
-// Created by Peter on 10/4/2025.
-//
 
 #ifndef UNIONFIND_H
 #define UNIONFIND_H
@@ -41,75 +38,68 @@ private:
     mutable std::conditional_t<TrackSize, SizeStorage, std::monostate> sizes_;
     size_type set_count_{0};
 
-    const value_type& get_ensured_parent(const value_type& x) const noexcept {
-        value_type root{x}, parent{};
-        while (true) {
-            if constexpr (std::integral<value_type>) parent = parents_[root];
-            else parent = parents_.find(root)->second;
+    template <typename Map>
+    static auto& map_access(Map& map, const value_type& key) noexcept {
+        if constexpr (std::integral<value_type>) {
+            return map[key];
+        }
+        else {
+            return map.find(key)->second;
+        }
+    }
 
-            if (parent == root) break;
-            root = parent;
-        }
-        parent = x;
-        while (parent != root) {
-            if constexpr (std::integral<value_type>) {
-                auto& at = parents_[parent];
-                parent = at;
-                at = root;
+    size_type& get_size(const value_type& x) const noexcept
+    requires TrackSize {
+        return map_access(sizes_, x);
+    }
+
+    size_type& get_rank(const value_type& x) const noexcept {
+        return map_access(ranks_, x);
+    }
+
+    value_type& get_direct_parent(const value_type& x) const noexcept {
+        return map_access(parents_, x);
+    }
+
+    const value_type& get_ensured_ancestor(const value_type& x) const noexcept {
+        const value_type* root = &x; // Avoid copies by keeping track of pointers
+        while (true) {
+            const value_type& parent = get_direct_parent(*root);
+            if (parent == *root) {
+                root = &parent;
+                break;
             }
-            else {
-                auto it = parents_.find(parent);
-                parent = std::move(it->second);
-                it->second = root;
-            }
+            root = &parent;
         }
-        return root;
+
+        value_type curr{x};
+        while (curr != *root) {
+            value_type& curr_parent_at = get_direct_parent(curr);
+            curr = std::move(curr_parent_at);  // Copy before modifying
+            curr_parent_at = *root;
+        }
+        return *root;
     }
 
     void unite_ensured_root(const value_type& root_x, const value_type& root_y) noexcept {
         if (root_x == root_y) {
             return;
         }
-        value_type rank_x{}, rank_y{};
-        if constexpr (std::integral<value_type>) {
-            rank_x = ranks_[root_x];
-            rank_y = ranks_[root_y];
-        }
+        const size_type rank_x = get_rank(root_x);
+        const size_type rank_y = get_rank(root_y);
+
+        auto merge = [&](const value_type& root_a, const value_type& root_b) {
+            get_direct_parent(root_a) = root_b;
+            if constexpr (TrackSize) {
+                get_size(root_b) += get_size(root_a);
+            }
+        };
+
+        if (rank_x < rank_y) merge(root_x, root_y);
+        else if (rank_x > rank_y) merge(root_y, root_x);
         else {
-            rank_x = ranks_.find(root_x)->second;
-            rank_y = ranks_.find(root_y)->second;
-        }
-        if (rank_x < rank_y) {
-            if constexpr (std::integral<value_type>) {
-                parents_[root_x] = root_y;
-                if constexpr (TrackSize) sizes_[root_y] += sizes_[root_x];
-            }
-            else {
-                parents_.find(root_x)->second = root_y;
-                if constexpr (TrackSize) sizes_.find(root_y)->second += sizes_.find(root_x)->second;
-            }
-        }
-        else if (rank_x > rank_y) {
-            if constexpr (std::integral<value_type>) {
-                parents_[root_y] = root_x;
-                if constexpr (TrackSize) sizes_[root_x] += sizes_[root_y];
-            }
-            else {
-                parents_.find(root_y)->second = root_x;
-                if constexpr (TrackSize) sizes_.find(root_x)->second += sizes_.find(root_y)->second;
-            }
-        }
-        else {
-            if constexpr (std::integral<value_type>) {
-                parents_[root_x] = root_y;
-                ++ranks_[root_y];
-                if constexpr (TrackSize) sizes_[root_y] += sizes_[root_x];
-            }
-            else {
-                parents_.find(root_x)->second = root_y;
-                ++ranks_.find(root_y)->second;
-                if constexpr (TrackSize) sizes_.find(root_y)->second += sizes_.find(root_x)->second;
-            }
+            merge(root_x, root_y);
+            ++get_rank(root_y);
         }
         --set_count_;
     }
@@ -127,11 +117,9 @@ public:
         }
     }
 
-    template <typename InputIt>
-    requires (!std::integral<value_type>) && std::input_iterator<InputIt>
-            && std::same_as<
-                std::remove_cvref_t<typename std::iterator_traits<InputIt>::value_type>,
-                std::remove_cvref_t<T>>
+    template <std::input_iterator InputIt>
+    requires (!std::integral<value_type>)
+            && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
     UnionFind(InputIt first, InputIt last) {
         for (; first != last; ++first) {
             insert(*first);
@@ -153,17 +141,17 @@ public:
         ++set_count_;
     }
 
-    template <std::ranges::range Container>
+    template <std::ranges::range Rng>
     requires (!std::integral<value_type>)
-            && std::same_as<std::remove_cvref_t<typename Container::value_type>,
-                            std::remove_cvref_t<value_type>>
+            && std::constructible_from<value_type, std::ranges::range_reference_t<Rng>>
     void insert(const Container& cont) {
         if constexpr (requires(const Container& c) { c.size(); }) {
-            const auto new_elem_cnt = static_cast<size_type>(cont.size());
-            parents_.reserve(parents_.size() + new_elem_cnt);
-            ranks_.reserve(ranks_.size() + new_elem_cnt);
+            const auto m = this->size();
+            const auto n = static_cast<size_type>(last - first);
+            parents_.reserve(m + n);
+            ranks_.reserve(m + n);
             if constexpr (TrackSize) {
-                sizes_.reserve(sizes_.size() + new_elem_cnt);
+                sizes_.reserve(m + n);
             }
         }
         for (const auto& x : cont) {
@@ -171,18 +159,17 @@ public:
         }
     }
 
-    template <typename InputIt>
+    template <std::input_iterator InputIt>
     requires (!std::integral<value_type>)
-            && std::input_iterator<InputIt>
-            && std::same_as<std::remove_cvref_t<typename std::iterator_traits<InputIt>::value_type>,
-                            std::remove_cvref_t<value_type>>
+            && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
     void insert(InputIt first, InputIt last) {
         if constexpr (std::random_access_iterator<InputIt>) {
-            const auto new_elem_cnt = static_cast<size_type>(last - first);
-            parents_.reserve(parents_.size() + new_elem_cnt);
-            ranks_.reserve(ranks_.size() + new_elem_cnt);
+            const auto m = this->size();
+            const auto n = static_cast<size_type>(last - first);
+            parents_.reserve(m + n);
+            ranks_.reserve(m + n);
             if constexpr (TrackSize) {
-                sizes_.reserve(sizes_.size() + new_elem_cnt);
+                sizes_.reserve(m + n);
             }
         }
         for (; first != last; ++first) {
@@ -211,66 +198,36 @@ public:
     }
 
     // Core methods
-    [[nodiscard]] const value_type& find_ensured(const value_type& x) {
+    [[nodiscard]] const value_type& find(const value_type& x) {
         if constexpr (std::integral<value_type>) {
             if (x >= parents_.size()) this->resize(x + 1);
         }
         else {
             if (!contains(x)) insert(x);
         }
-        return get_ensured_parent(x);
+        return get_ensured_ancestor(x);
     }
 
-    [[nodiscard]] const value_type& find_existing(const value_type& x) const {
-        if constexpr (std::integral<value_type>) {
-            if (x >= parents_.size()) throw std::out_of_range("UnionFind index out of range");
-        }
-        else {
-            if (!contains(x)) throw std::out_of_range("UnionFind key not found");
-        }
-        return get_ensured_parent(x);
+    [[nodiscard]] const value_type& find_existing(const value_type& x) const noexcept {
+        return get_ensured_ancestor(x);
     }
 
-    [[nodiscard]] const value_type& find_existing_unsafe(const value_type& x) const noexcept {
-        return get_ensured_parent(x);
-    }
-
-    [[nodiscard]] std::optional<const value_type&> try_find(const value_type& x) const noexcept {
+    [[nodiscard]] std::optional<value_type> try_find(const value_type& x) const noexcept {
         if constexpr (std::integral<value_type>) {
             if (x >= parents_.size()) return std::nullopt;
         }
         else {
             if (!parents_.contains(x)) return std::nullopt;
         }
-        return get_ensured_parent(x);
+        return get_ensured_ancestor(x);
     }
 
     void unite_new(const value_type& x, const value_type& y) {
-        const auto root_x = find_ensured(x);
-        const auto root_y = find_ensured(y);
-        unite_ensured_root(root_x, root_y);
+        unite_ensured_root(find_ensured(y), find_ensured(y));
     }
 
     void unite_existing(const value_type& x, const value_type& y)  {
-        const auto root_x = find_existing(x);
-        const auto root_y = find_existing(y);
-        unite_ensured_root(root_x, root_y);
-    }
-
-    void unite_existing_unsafe(const value_type& x, const value_type& y) {
-        const auto root_x = find_existing_unsafe(x);
-        const auto root_y = find_existing_unsafe(y);
-        unite_ensured_root(root_x, root_y);
-    }
-
-    bool try_unite(const value_type& x, const value_type& y) {
-        const auto root_x = try_find(x);
-        const auto root_y = try_find(y);
-        if (root_x == std::nullopt || root_y == std::nullopt) {
-            return false;
-        }
-        unite_ensured_root(root_x.value(), root_y.value());
-        return true;
+        unite_ensured_root(find_existing(x), find_existing(y));
     }
 
     // Query Methods
@@ -315,9 +272,11 @@ public:
         return set_count_;
     }
 
-    [[nodiscard]] bool contains(const value_type& x) const noexcept
-    requires (!std::integral<value_type>) {
-        return parents_.contains(x);
+    [[nodiscard]] bool contains(const value_type& x) const noexcept {
+        if constexpr (std::integral<value_type>) {
+            return x < this->size();
+        }
+        else return parents_.contains(x);
     }
 
     void clear() noexcept {
@@ -331,4 +290,3 @@ public:
 };
 
 #endif //UNIONFIND_H
-
