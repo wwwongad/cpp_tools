@@ -145,9 +145,9 @@ public:
     requires (!std::integral<value_type>)
             && std::constructible_from<value_type, std::ranges::range_reference_t<Rng>>
     void insert(Rng&& rng) {
-        if constexpr (requires { std::ranges::size(rng) }) {
+        if constexpr (requires { std::ranges::size(rng); }) {
             const auto m = this->size();
-            const auto n = static_cast<size_type>(std::range::size(rng));
+            const auto n = static_cast<size_type>(std::ranges::size(rng));
             parents_.reserve(m + n);
             ranks_.reserve(m + n);
             if constexpr (TrackSize) {
@@ -290,4 +290,5 @@ public:
 };
 
 #endif //UNIONFIND_H
+
 
