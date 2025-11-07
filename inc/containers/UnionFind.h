@@ -273,7 +273,7 @@ public:
         if (!this->contains(x)) {
             return 0U;
         }
-        return get_const(ranks_, x);
+        return get_const(ranks_, find_const(x));
     }
 
     [[nodiscard]] size_type set_size(const value_type& x) const noexcept
@@ -281,7 +281,7 @@ public:
         if (!this->contains(x)) {
             return 0U;
         }
-        return get_const(sizes_, x);
+        return get_const(sizes_, find_const(x));
     }
 
     [[nodiscard]] size_type set_count() const noexcept {
@@ -317,5 +317,6 @@ public:
 };
 
 #endif //UNIONFIND_H
+
 
 
