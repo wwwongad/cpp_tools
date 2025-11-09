@@ -19,7 +19,10 @@ concept Hashable = requires(T a) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
 };
 
-template <typename T, bool TrackSize = false>
+// Defaults to std::vector for integral types; std::unordered_map otherwise.
+// However, std::unordered_map can also be chosen for integral types
+// To ensure that the size of an UnionFind is exactly the number of elements we explicitly inserted.
+template <typename T, bool TrackSize = false, bool UsesMap = !std::integral<T>>
 requires std::copyable<T> && std::equality_comparable<T> && Hashable<T>
 class UnionFind {
 public:
@@ -28,25 +31,23 @@ public:
     using size_type = std::size_t;
 
 private:
-    using ParentStorage = std::conditional_t<std::integral<value_type>,
+    using ParentStorage = std::conditional_t<!UsesMap,
             std::vector<value_type>, std::unordered_map<value_type, value_type>>;
 
-    using RankStorage = std::conditional_t<std::integral<value_type>,
+    using RankStorage = std::conditional_t<!UsesMap,
             std::vector<size_type>, std::unordered_map<value_type, size_type>>;
 
-    using SizeStorage = std::conditional_t<std::integral<value_type>,
+    using SizeStorage = std::conditional_t<!UsesMap,
             std::vector<size_type>, std::unordered_map<value_type, size_type>>;
 
-    // It is guaranteed that these data members will not be modified in const methods despite mutability.
-    // This is to avoid overloading get_ensured_ancestor() method for const and non-const.
-    mutable ParentStorage parents_; 
+    mutable ParentStorage parents_;
     mutable RankStorage ranks_;
     mutable std::conditional_t<TrackSize, SizeStorage, std::monostate> sizes_;
     size_type set_count_{0};
 
     template <typename Storage>
     static auto& get_at(Storage& storage, const value_type& key) noexcept {
-        if constexpr (std::integral<value_type>) {
+        if constexpr (!UsesMap) {
             return storage[key];
         }
         else {
@@ -56,7 +57,7 @@ private:
 
     template <typename Storage>
     static const auto& get_const(const Storage& storage, const value_type& key) noexcept {
-        if constexpr (std::integral<value_type>) {
+        if constexpr (!UsesMap) {
             return storage[key];
         }
         else {
@@ -118,10 +119,12 @@ private:
 
 public:
     // Constructors and Destructor
-    UnionFind() requires (!std::integral<value_type>) = default;
+    // Default constructor - for std::unordered_map only
+    UnionFind() requires UsesMap = default;
 
+    // For std::vector
     explicit UnionFind(size_type n)
-    requires std::integral<value_type>
+    requires (!UsesMap)
     : parents_(n), ranks_(n, 1), set_count_(n) {
         std::iota(parents_.begin(), parents_.end(), 0);
         if constexpr (TrackSize) {
@@ -129,9 +132,9 @@ public:
         }
     }
 
+    // For std::unordered_map
     template <std::input_iterator InputIt>
-    requires (!std::integral<value_type>)
-            && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
+    requires UsesMap && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
     explicit UnionFind(InputIt first, InputIt last) {
         insert(first, last);
     }
@@ -142,11 +145,10 @@ public:
     UnionFind& operator=(UnionFind&& other) = default;
     ~UnionFind() = default;
 
-    // Modifiers - for non-integral types only
+    // Modifiers - for std::unordered_map only
     template <typename Val>
-    requires std::constructible_from<value_type, Val>
-    void insert(Val&& x)
-    requires (!std::integral<value_type>) {
+    requires UsesMap && std::constructible_from<value_type, Val>
+    void insert(Val&& x) {
         if (parents_.contains(x)) return;
         if constexpr (TrackSize) sizes_[x] = 1;
         ranks_[x] = 1;
@@ -155,8 +157,7 @@ public:
     }
 
     template <std::input_iterator InputIt>
-    requires (!std::integral<value_type>)
-            && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
+    requires UsesMap && std::constructible_from<value_type, std::iter_reference_t<InputIt>>
     void insert(InputIt first, InputIt last) {
         if constexpr (std::random_access_iterator<InputIt>) {
             const auto m = this->size();
@@ -173,16 +174,15 @@ public:
     }
 
     template <std::ranges::range Rng>
-    requires (!std::integral<value_type>)
-           && std::constructible_from<value_type, std::ranges::range_reference_t<Rng>>
+    requires UsesMap && std::constructible_from<value_type, std::ranges::range_reference_t<Rng>>
     void insert(Rng&& rng) {
         insert(std::ranges::begin(rng), std::ranges::end(rng));
     }
 
 
-    // Modifier for integral types
+    // Modifier for std::vector
     void resize(size_type new_size)
-    requires std::integral<value_type> {
+    requires !UsesMap {
         const auto old_size = parents_.size();
         // Disjoint set union does not support detaching elements from a set
         if (new_size <= old_size) return;
@@ -202,31 +202,28 @@ public:
 
     // Core methods
     [[nodiscard]] const_reference find(const value_type& x) {
-        if constexpr (std::integral<value_type>) {
-            if (x >= parents_.size()) this->resize(x + 1);
-        }
-        else {
-            if (!contains(x)) insert(x);
-        }
-        return get_ensured_ancestor<false>(x);
-    }
-
-    template <bool Unsafe = true> // UB for non-existent value in unsafe mode
-    [[nodiscard]] const_reference find_existing(const value_type& x) noexcept(Unsafe) {
-        if constexpr (!Unsafe) { // throw upon non-existent value in safe mode
-            if (!contains(x))
-                throw std::runtime_error("UnionFind::find_existing() called on non-existent value");
+        if (!contains(x) /* for both std::vector and std::unordered_map */) {
+            insert(x);
         }
         return get_ensured_ancestor<false>(x);
     }
 
     template <bool Unsafe = true>
+    [[nodiscard]] const_reference find_existing(const value_type& x) noexcept(Unsafe) {
+        if constexpr (!Unsafe) { // throw upon non-existent value in safe method
+            if (!contains(x))
+                throw std::runtime_error("UnionFind::find_existing() called on non-existent value");
+        }
+        return get_ensured_ancestor<false/* does path compression */>(x);
+    }
+
+    template <bool Unsafe = true>
     [[nodiscard]] const_reference find_const(const value_type& x) const noexcept(Unsafe) {
-        if constexpr (!Unsafe) { // throw upon non-existent value in safe mode
+        if constexpr (!Unsafe) { // throw upon non-existent value in safe method
             if (!contains(x))
                 throw std::runtime_error("UnionFind::find_const() called on non-existent value");
         }
-        return get_ensured_ancestor<true>(x);
+        return get_ensured_ancestor<true/* omits path compression */>(x);
     }
 
     void unite_new(const value_type& x, const value_type& y) {
@@ -236,6 +233,14 @@ public:
     template<bool Unsafe = true>
     void unite_existing(const value_type& x, const value_type& y) noexcept(Unsafe) {
         unite_ensured_root(find_existing<Unsafe>(x), find_existing<Unsafe>(y));
+    }
+
+    bool try_unite(const value_type& x, const value_type& y) {
+        if (!contains(x) || !contains(y)) {
+            return false;
+        }
+        unite_ensured_root(find_existing(x), find_existing(y));
+        return true;
     }
 
     // Query Methods
@@ -289,7 +294,7 @@ public:
     }
 
     [[nodiscard]] bool contains(const value_type& x) const noexcept {
-        if constexpr (std::integral<value_type>) {
+        if constexpr (!UsesMap) {
             return x >= 0 && x < this->size();
         }
         else return parents_.contains(x);
@@ -314,9 +319,14 @@ public:
         }
         swap(set_count_, other.set_count_);
     }
+
 };
 
+template <typename T, bool TrackSize, bool UsesMap>
+void swap(UnionFind<T, TrackSize, UsesMap>& lhs,
+            UnionFind<T, TrackSize, UsesMap>& rhs) noexcept {
+    lhs.swap(rhs);
+}
+
 #endif //UNIONFIND_H
-
-
 
