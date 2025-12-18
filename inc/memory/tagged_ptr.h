@@ -17,10 +17,14 @@ namespace urlicht {
         using deleter_type = Deleter;
 
         static_assert(std::is_object_v<T>, "T must be an object type");
+
         static_assert(requires (deleter_type deleter, pointer ptr) { deleter(ptr); },
                      "Deleter must be a function object for T*");
+
         static_assert(alignof(element_type) >= 2, "T must be 2 or more bytes aligned");
-        static_assert(!(alignof(element_type) & alignof(element_type) - 1), "Alignment must be a power of 2");
+
+        static_assert(alignof(element_type) > 0 && !(alignof(element_type) & alignof(element_type) - 1),
+                     "Alignment must be a power of 2");
 
     private:
         using tag_size_type = uint8_t;  // size type to hold the number of free bits
@@ -45,25 +49,20 @@ namespace urlicht {
         /************************* CONSTRUCTORS *************************/
         constexpr tagged_ptr() noexcept = default;
 
-        explicit constexpr tagged_ptr(std::nullptr_t)
-        noexcept(std::is_nothrow_default_constructible_v<deleter_type>)
+        explicit constexpr tagged_ptr(const pointer ptr = nullptr) noexcept
         requires std::default_initializable<deleter_type>
-        : deleter_{} {   }
-
-        explicit constexpr tagged_ptr(const pointer ptr) noexcept
-        requires std::default_initializable<deleter_type>
-        : ptr_{reinterpret_cast<uintptr_t>(ptr)} {   }
+        : ptr_{ reinterpret_cast<uintptr_t>(ptr) } {   }
 
         // UB if deleter_type is a rvalue reference but Del is a lvalue reference, or vice versa
         template <typename Del>
         requires std::constructible_from<deleter_type, Del&&>
         constexpr tagged_ptr(const pointer ptr, Del&& del)
         noexcept(std::is_nothrow_constructible_v<deleter_type, Del&&>)
-        : ptr_{reinterpret_cast<uintptr_t>(ptr)},  deleter_{std::forward<Del>(del)} {   }
+        : ptr_{ reinterpret_cast<uintptr_t>(ptr) },  deleter_{std::forward<Del>(del)} {   }
 
         constexpr tagged_ptr(const tagged_ptr& other)
         noexcept(std::is_nothrow_copy_constructible_v<deleter_type>)
-        requires std::copy_constructible<deleter_type> = default;
+        requires (!IS_OWNING) && std::copy_constructible<deleter_type> = default;
 
         constexpr tagged_ptr(tagged_ptr&& other)
         noexcept(std::is_nothrow_move_constructible_v<deleter_type>)
@@ -71,7 +70,7 @@ namespace urlicht {
 
         constexpr tagged_ptr& operator=(const tagged_ptr& other)
         noexcept(std::is_nothrow_copy_assignable_v<deleter_type>)
-        requires std::is_copy_assignable_v<deleter_type> = default;
+        requires (!IS_OWNING) && std::is_copy_assignable_v<deleter_type> = default;
 
         constexpr tagged_ptr& operator=(tagged_ptr&& other)
         noexcept(std::is_nothrow_move_assignable_v<deleter_type>)
@@ -95,7 +94,7 @@ namespace urlicht {
         }
 
         // For non-owning tagged_ptr, the pointer is returned
-        [[nodiscard]] constexpr pointer reset(pointer new_ptr = pointer{}) noexcept
+        [[nodiscard]] constexpr pointer reset(const pointer new_ptr = pointer{}) noexcept
         requires (!IS_OWNING) {
             auto tmp = get();
             ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
@@ -103,11 +102,30 @@ namespace urlicht {
         }
 
         // For owning tagged_ptr, the pointer is deleted
-        constexpr void reset(pointer new_ptr = pointer{})
+        constexpr void reset(const pointer new_ptr = pointer{})
         noexcept(noexcept(this->get_deleter()(this->get())))
         requires (IS_OWNING) {
             auto tmp = get();
             ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            if (tmp) {
+                get_deleter()(tmp);
+            }
+        }
+
+        [[nodiscard]] constexpr pointer reset(const pointer new_ptr, const tag_type tag) noexcept
+        requires (!IS_OWNING) {
+            auto tmp = get();
+            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            set_tag(tag);
+            return tmp;
+        }
+
+        constexpr void reset(const pointer new_ptr, const tag_type tag)
+        noexcept(noexcept(this->get_deleter()(this->get())))
+        requires (IS_OWNING) {
+            auto tmp = get();
+            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            set_tag(tag);
             if (tmp) {
                 get_deleter()(tmp);
             }
@@ -147,7 +165,7 @@ namespace urlicht {
             return deleter_;
         }
 
-        [[nodiscard]] constexpr explicit operator bool() const noexcept {
+        [[nodiscard]] constexpr operator bool() const noexcept {
             return get() != nullptr;
         }
 
@@ -166,32 +184,43 @@ namespace urlicht {
             return lhs.get() == rhs.get();
         }
 
-        friend constexpr bool operator==(const tagged_ptr& lhs, pointer rhs) noexcept {
+        friend constexpr bool operator==(const tagged_ptr& lhs, const pointer rhs) noexcept {
             return lhs.get() == rhs;
         }
 
-        friend constexpr bool operator==(pointer lhs, const tagged_ptr& rhs) noexcept {
+        friend constexpr bool operator==(const pointer lhs, const tagged_ptr& rhs) noexcept {
             return lhs == rhs.get();
         }
 
-        friend constexpr bool operator==(const tagged_ptr& lhs, std::nullptr_t) noexcept {
-            return lhs.get() == nullptr;
+        friend constexpr bool operator<=>(const tagged_ptr& lhs, const tagged_ptr& rhs) noexcept {
+            return lhs.get() <=> rhs.get();
         }
 
-        friend constexpr bool operator==(std::nullptr_t, const tagged_ptr& lhs) noexcept {
-            return lhs.get() == nullptr;
+        friend constexpr bool operator<=>(const tagged_ptr& lhs, const pointer rhs) noexcept {
+            return lhs.get() <=> rhs;
         }
 
-        friend constexpr void swap(tagged_ptr& lhs, tagged_ptr& rhs)
-        noexcept(std::is_nothrow_swappable_v<deleter_type>) {
+        friend constexpr bool operator<=>(const pointer lhs, const tagged_ptr& rhs) noexcept {
+            return lhs <=> rhs.get();
+        }
+
+        constexpr void swap(tagged_ptr& other)
+        noexcept(std::is_empty_v<deleter_type> || std::is_nothrow_swappable_v<deleter_type>)
+        requires std::swappable<deleter_type> {
             using std::swap;
-            swap(lhs.ptr_, rhs.ptr_);
+            swap(ptr_, other.ptr_);
             if constexpr(!std::is_empty_v<deleter_type>) {
-                swap(lhs.deleter_, rhs.deleter_);
+                swap(deleter_, other.deleter_);
             }
         }
 
-        friend constexpr std::ostream operator<<(std::ostream& os, const tagged_ptr& ptr) noexcept {
+        friend constexpr void swap(tagged_ptr& lhs, tagged_ptr& rhs)
+        noexcept(noexcept(lhs.swap(rhs)))
+        requires std::swappable<deleter_type> {
+            lhs.swap(rhs);
+        }
+
+        friend constexpr std::ostream& operator<<(std::ostream& os, const tagged_ptr& ptr) {
             return os << ptr.get();
         }
 
