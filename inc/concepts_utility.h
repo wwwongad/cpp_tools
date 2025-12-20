@@ -389,8 +389,8 @@ namespace urlicht::concepts {
 		typename Deq::allocator_type;
 	}
 	&& requires(Deq& d, typename Deq::value_type value) {
-		{ d.emplace_front(value) } -> std::same_as<typename Deq::value_type>;
-		{ d.emplace_front(std::move(value)) } -> std::same_as<typename Deq::value_type>;
+		{ d.emplace_front(value) } -> std::same_as<typename Deq::reference>;
+		{ d.emplace_front(std::move(value)) } -> std::same_as<typename Deq::reference>;
 		// Optional: { d.prepend_range(d) } -> std::same_as<void>;
 	};
 
@@ -406,3 +406,4 @@ namespace urlicht::concepts {
 
 
 #endif //CONCEPTS_UTILITY_H
+
