@@ -203,15 +203,15 @@ namespace urlicht {
             return lhs == rhs.get();
         }
 
-        friend constexpr bool operator<=>(const tagged_ptr& lhs, const tagged_ptr& rhs) noexcept {
+        friend constexpr auto operator<=>(const tagged_ptr& lhs, const tagged_ptr& rhs) noexcept {
             return lhs.get() <=> rhs.get();
         }
 
-        friend constexpr bool operator<=>(const tagged_ptr& lhs, const pointer rhs) noexcept {
+        friend constexpr auto operator<=>(const tagged_ptr& lhs, const pointer rhs) noexcept {
             return lhs.get() <=> rhs;
         }
 
-        friend constexpr bool operator<=>(const pointer lhs, const tagged_ptr& rhs) noexcept {
+        friend constexpr auto operator<=>(const pointer lhs, const tagged_ptr& rhs) noexcept {
             return lhs <=> rhs.get();
         }
 
@@ -252,3 +252,4 @@ namespace urlicht {
 }
 
 #endif //TAGGED_PTR_H
+
