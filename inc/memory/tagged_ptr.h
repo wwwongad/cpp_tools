@@ -3,6 +3,8 @@
 #include <memory>
 #include <type_traits>
 #include <cstdint>
+#include <bit>
+#include <complex.h>
 
 namespace urlicht {
 
@@ -23,7 +25,7 @@ namespace urlicht {
 
         static_assert(alignof(element_type) >= 2, "T must be 2 or more bytes aligned");
 
-        static_assert(alignof(element_type) > 0 && !(alignof(element_type) & alignof(element_type) - 1),
+        static_assert(alignof(element_type) > 0 && !(alignof(element_type) & (alignof(element_type) - 1)),
                      "Alignment must be a power of 2");
 
     private:
@@ -52,14 +54,14 @@ namespace urlicht {
 
         explicit constexpr tagged_ptr(const pointer ptr) noexcept
         requires std::default_initializable<deleter_type>
-        : ptr_{ reinterpret_cast<uintptr_t>(ptr) }, deleter_{} {}
+        : ptr_{ std::bit_cast<uintptr_t>(ptr) }, deleter_{} {}
 
         // UB if deleter_type is a rvalue reference but Del is a lvalue reference, or vice versa
         template <typename Del>
         requires std::constructible_from<deleter_type, Del&&>
         constexpr tagged_ptr(const pointer ptr, Del&& del)
         noexcept(std::is_nothrow_constructible_v<deleter_type, Del&&>)
-        : ptr_{ reinterpret_cast<uintptr_t>(ptr) },  deleter_{std::forward<Del>(del)} {   }
+        : ptr_{ std::bit_cast<uintptr_t>(ptr) },  deleter_{std::forward<Del>(del)} {   }
 
         constexpr tagged_ptr(const tagged_ptr& other)
         noexcept(std::is_nothrow_copy_constructible_v<deleter_type>)
@@ -98,7 +100,7 @@ namespace urlicht {
         [[nodiscard]] constexpr pointer reset(const pointer new_ptr = pointer{}) noexcept
         requires (!IS_OWNING) {
             auto tmp = get();
-            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr);
             return tmp;
         }
 
@@ -107,7 +109,7 @@ namespace urlicht {
         noexcept(noexcept(this->get_deleter()(this->get())))
         requires (IS_OWNING) {
             auto tmp = get();
-            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr);
             if (tmp) {
                 get_deleter()(tmp);
             }
@@ -116,7 +118,7 @@ namespace urlicht {
         [[nodiscard]] constexpr pointer reset(const pointer new_ptr, const tag_type tag) noexcept
         requires (!IS_OWNING) {
             auto tmp = get();
-            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr);
             set_tag(tag);
             return tmp;
         }
@@ -125,7 +127,7 @@ namespace urlicht {
         noexcept(noexcept(this->get_deleter()(this->get())))
         requires (IS_OWNING) {
             auto tmp = get();
-            ptr_ = reinterpret_cast<uintptr_t>(new_ptr);
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr);
             set_tag(tag);
             if (tmp) {
                 get_deleter()(tmp);
@@ -235,17 +237,17 @@ namespace urlicht {
 
     };
 
-    template <typename T, typename... Args>
-    tagged_ptr<T> make_tagged(Args&&... args)
+    template <typename T, bool IS_OWNING = false, typename... Args>
+    tagged_ptr<T, IS_OWNING> make_tagged(Args&&... args)
     requires (!std::is_array_v<T>) && std::constructible_from<T, Args&&...> {
-        return tagged_ptr<T>(new T(std::forward<Args>(args)...));
+        return tagged_ptr<T, IS_OWNING>(new T(std::forward<Args>(args)...));
     }
 
-    template <typename T, std::integral SizeType>
-    tagged_ptr<T> make_tagged(SizeType size)
+    template <typename T, bool IS_OWNING = false, std::integral SizeType>
+    tagged_ptr<T, IS_OWNING> make_tagged(SizeType size)
     requires std::is_array_v<T> && std::default_initializable<std::remove_extent_t<T>> {
         using element_type = std::remove_extent_t<T>;
-        return tagged_ptr<T>(new element_type[size]{});
+        return tagged_ptr<T, IS_OWNING>(new element_type[size]{});
     }
 }
 
