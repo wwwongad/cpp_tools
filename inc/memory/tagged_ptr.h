@@ -4,7 +4,9 @@
 #include <type_traits>
 #include <cstdint>
 #include <bit>
-#include <complex.h>
+#include <concepts>
+#include <ostream>
+#include <cassert>
 
 namespace urlicht {
 
@@ -246,10 +248,10 @@ namespace urlicht {
     template <typename T, bool IS_OWNING = false, std::integral SizeType>
     tagged_ptr<T, IS_OWNING> make_tagged(SizeType size)
     requires std::is_array_v<T> && std::default_initializable<std::remove_extent_t<T>> {
-        using element_type = std::remove_extent_t<T>;
-        return tagged_ptr<T, IS_OWNING>(new element_type[size]{});
+        return tagged_ptr<T, IS_OWNING>(new std::remove_extent_t<T>[size]{});
     }
 }
 
 #endif //TAGGED_PTR_H
+
 
