@@ -8,12 +8,12 @@ namespace urlicht {
 
     template<
         typename T,
-        typename Deleter = std::default_delete<T>,
-        bool IS_OWNING = false>
+        bool IS_OWNING = false,
+        typename Deleter = std::default_delete<T>>
     class tagged_ptr {
     public:
-        using pointer = T*;
-        using element_type = T;
+        using pointer = std::conditional_t<std::is_array_v<T>, std::decay_t<T>, T*>;
+        using element_type = std::conditional_t<std::is_array_v<T>, std::remove_extent_t<T>, T>;
         using deleter_type = Deleter;
 
         static_assert(std::is_object_v<T>, "T must be an object type");
@@ -35,6 +35,11 @@ namespace urlicht {
         // ptr_ & TAG_MASK == pointer tag
         static constexpr uintptr_t TAG_MASK = ~PTR_MASK;
 
+        uintptr_t ptr_{};
+        [[no_unique_address]] deleter_type deleter_;
+
+    public:
+
         using tag_type =
             std::conditional_t<NUM_FREE_BITS <= 8,  std::uint8_t,
                 std::conditional_t<NUM_FREE_BITS <= 16, std::uint16_t,
@@ -42,16 +47,12 @@ namespace urlicht {
                 >
             >;
 
-        uintptr_t ptr_{};
-        [[no_unique_address]] deleter_type deleter_;
-
-    public:
         /************************* CONSTRUCTORS *************************/
         constexpr tagged_ptr() noexcept = default;
 
-        explicit constexpr tagged_ptr(const pointer ptr = nullptr) noexcept
+        explicit constexpr tagged_ptr(const pointer ptr) noexcept
         requires std::default_initializable<deleter_type>
-        : ptr_{ reinterpret_cast<uintptr_t>(ptr) } {   }
+        : ptr_{ reinterpret_cast<uintptr_t>(ptr) }, deleter_{} {}
 
         // UB if deleter_type is a rvalue reference but Del is a lvalue reference, or vice versa
         template <typename Del>
@@ -170,12 +171,20 @@ namespace urlicht {
         }
 
         // For tagged_ptr<T>
-        [[nodiscard]] constexpr element_type& operator*() const noexcept {
+        [[nodiscard]] constexpr element_type& operator*() const noexcept
+        requires (!std::is_array_v<T>) {
             return *get();
         }
 
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
+        [[nodiscard]] constexpr pointer operator->() const noexcept
+        requires (!std::is_array_v<T>) {
             return get();
+        }
+
+        // For tagged_ptr<T[]>
+        [[nodiscard]] constexpr element_type& operator[](const std::size_t pos) const noexcept
+        requires std::is_array_v<T> {
+            return get()[pos];
         }
 
         /************************* UTILITIES *************************/
@@ -225,6 +234,19 @@ namespace urlicht {
         }
 
     };
+
+    template <typename T, typename... Args>
+    tagged_ptr<T> make_tagged(Args&&... args)
+    requires (!std::is_array_v<T>) && std::constructible_from<T, Args&&...> {
+        return tagged_ptr<T>(new T(std::forward<Args>(args)...));
+    }
+
+    template <typename T, std::integral SizeType>
+    tagged_ptr<T> make_tagged(SizeType size)
+    requires std::is_array_v<T> && std::default_initializable<std::remove_extent_t<T>> {
+        using element_type = std::remove_extent_t<T>;
+        return tagged_ptr<T>(new element_type[size]{});
+    }
 }
 
 #endif //TAGGED_PTR_H
