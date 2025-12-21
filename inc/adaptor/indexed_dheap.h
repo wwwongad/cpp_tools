@@ -1,12 +1,11 @@
-
-#ifndef INDEXED_BHEAP_H
-#define INDEXED_BHEAP_H
+#ifndef INDEXED_DHEAP_H
+#define INDEXED_DHEAP_H
+#pragma once
 #include <cstdint>
-#include <optional>
 #include <stdexcept>
-#include "d_ary_heap.h"
+#include "base_heap_.h"
 #include <unordered_map>
-
+#include <Containers/inplace_vector.h>
 #include "../compare.h"
 
 namespace urlicht{
@@ -16,14 +15,16 @@ template <
     std::size_t d = 4,
     concepts::random_access_container Container = std::vector<T>,
     concepts::comparison_functor<T> Compare = compare::less<>,
-    concepts::self_addable KeyType = uint64_t,
-    concepts::contiguous_container KeyContainer = std::vector<KeyType>>
+    std::incrementable KeyType = uint64_t,
+    concepts::contiguous_container KeyContainer = std::vector<KeyType>,
+    concepts::unordered_map PositionMap = std::unordered_map<KeyType, typename Container::size_type>>
 requires std::same_as<T, typename Container::value_type> &&
          std::is_object_v<T> && (d >= 2) &&
          std::same_as<typename KeyContainer::value_type, KeyType> &&
+         std::same_as<typename PositionMap::key_type, KeyType> &&
+         std::same_as<typename PositionMap::mapped_type, typename Container::size_type> &&
          std::default_initializable<KeyType>
 class indexed_d_ary_heap final : public detail::base_heap<T, Container, Compare> {
-
 public:
     // Common type alias
     using value_type = typename Container::value_type;
@@ -41,15 +42,15 @@ public:
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
     // Specific type alias
-    using key_type = uint64_t;
+    using key_type = KeyType;
     using key_storage = KeyContainer;
-    using position_storage = std::unordered_map<key_type, size_type>;
+    using position_storage = PositionMap;
 
     static consteval size_type arity() noexcept { return d; }
 
 private:
-    key_storage keys_; //keys_[pos] stores the key of data_[pos]
-    position_storage positions_; // positions_[key] -> the index of the value associated with the key in data_[pos]
+    key_storage keys_{}; //keys_[pos] stores the key of data_[pos]
+    position_storage positions_{}; // positions_[key] -> the index of the value associated with the key in data_[pos]
     key_type next_key{};
 
     [[nodiscard]] static constexpr size_t parent(const size_t i) noexcept { return (i - 1) / d; }
@@ -84,6 +85,24 @@ private:
         }
     }
 
+    // Strong exception gurantee
+    template <typename ...Args>
+    constexpr void insert_all_noheapify(const key_type key, const size_type size, Args&& ...args) {
+        bool p_done = false, d_done = false;
+        try {
+            this->positions_.emplace(key, size); p_done = true;
+            this->data_.emplace_back(std::forward<Args>(args)...); d_done = true;
+            // keys_ is of the same size as data_, so we use emplace_back
+            this->keys_.emplace_back(key);
+        }
+        catch(...){
+            if (p_done) this->positions_.erase(key);
+            if (d_done) this->data_.pop_back();
+            throw;
+        }
+    }
+
+    // No exception guarentee
     constexpr void heapify_up(size_type from) {
         value_type val = std::move(this->data_[from]);
         const key_type k = keys_[from];
@@ -102,6 +121,7 @@ private:
         this->positions_.find(k)->second = from;
     }
 
+    // No exception guarantee
     constexpr void heapify_down(size_type idx) {
         const size_type n = this->data_.size();
         value_type val = std::move(this->data_[idx]);
@@ -141,13 +161,34 @@ private:
         }
     }
 
+    constexpr void initialize_keys() { // Initialize keys_ and positions_ after data_ is initialized
+        if constexpr (concepts::reservable_container<position_storage>) {
+            this->positions_.reserve(this->data_.size());
+        } if constexpr (concepts::reservable_container<key_storage>) {
+            this->keys_.reserve(this->data_.size());
+        }
+        for (size_type i = 0; i < this->size(); ++i) {
+            bool p_done = false;
+            const auto key = this->next_key;
+            try {
+                this->positions_.emplace(key, i); p_done = true;
+                this->keys_.emplace_back(key);
+            }
+            catch(...){
+                if (p_done) this->positions_.erase(key);
+            }
+            ++this->next_key;
+        }
+    }
+
 public:
     using BaseHeap_ = detail::base_heap<T, Container, Compare>;
 
     template <typename VTy>
     requires std::constructible_from<value_type, VTy>
     constexpr indexed_d_ary_heap(std::initializer_list<VTy> init)
-       : BaseHeap_(init.begin(), init.end()) {
+       : BaseHeap_(init.begin(), init.end()) { // Appends data only
+        this->initialize_keys();
         this->build_heap();
     }
 
@@ -155,6 +196,7 @@ public:
     template<typename ...Arg>
     explicit constexpr indexed_d_ary_heap(Arg&&... args)
     : BaseHeap_(std::forward<Arg>(args)...) {
+        this->initialize_keys();
         this->build_heap();
     }
 
@@ -193,20 +235,9 @@ public:
     requires std::constructible_from<T, Args&&...>
     constexpr key_type emplace(Args&& ...args) {
         // Strong exception guarantee - emplace all or emplace none
-        const auto key = this->next_key + 1;
-        const auto size = this->size();
-        bool p_done = false, d_done = false;
-        try{
-            this->positions_.emplace(key, size); p_done = true;
-            this->data_.emplace_back(std::forward<Args>(args)...); d_done = true;
-            // keys_ is of the same size as data_, so we use emplace_back
-            this->keys_.emplace_back(key);
-        }
-        catch(...){
-            if (p_done) this->positions_.erase(key);
-            if (d_done) this->data_.pop_back();
-            throw;
-        }
+        const auto key = this->next_key;
+        const auto size = this->data_.size();
+        this->insert_all_noheapify(key, size, std::forward<Args>(args)...);
         this->heapify_up(size);
         ++this->next_key;
         return key;
@@ -216,7 +247,8 @@ public:
               concepts::sentinel_or_iter<Iter> Sentinel,
               std::output_iterator<key_type> OpIter>
     constexpr void push_range(Iter first, Sentinel last, OpIter out) {
-        // Basic exception safety - takes in as many elements as possible until it throws
+        // Basic exception safety in general - takes in as many elements as possible until it throws
+        // Strong exception gurantee for each input - see the above
         if constexpr (std::random_access_iterator<Iter>) {
             const size_type n = this->size(), m = static_cast<size_type>(last - first);
             if constexpr (concepts::reservable_container<Container>) {
@@ -237,19 +269,22 @@ public:
             //rebuild if m >= (n / max(1, log2(n))), O(n + m)
             if (!n || m >= n / logdn(n)) {
                 for (; first != last; ++first) {
-                    this->data_.emplace_back(std::forward<decltype(*first)>(*first));
-                    out++ = this->next_key++;
+                    const auto key = this->next_key;
+                    const auto size = this->data_.size();
+                    this->insert_all_noheapify(key, size, std::forward<decltype(*first)>(*first));
+                    *out++ = this->next_key++;
                 }
                 this->build_heap();
                 return;
             }
         }
-        //otherwise, or for input iterator, heapify one-by-one, O(m log(n + m))
+        // Otherwise, or for non-random access iterator, heapify one-by-one, O(m log(n + m))
         size_type start_pos_ = this->size();
         for (; first != last; ++first, ++start_pos_) {
-            this->data_.emplace_back(std::forward<decltype(*first)>(*first));
-            out++ = this->next_key++;
+            const auto key = this->next_key;
+            this->insert_all_noheapify(key, start_pos_, std::forward<decltype(*first)>(*first));
             this->heapify_up(start_pos_);
+            *out++ = this->next_key++;
         }
     }
 
@@ -333,8 +368,8 @@ public:
 
     constexpr void clear()
     noexcept(noexcept(this->data_.clear()) &&
-             noexcept(this->keys.clear()) &&
-             noexcept(this->positions.clear())) {
+             noexcept(this->keys_.clear()) &&
+             noexcept(this->positions_.clear())) {
         this->data_.clear();
         this->keys_.clear();
         this->positions_.clear();
@@ -344,8 +379,9 @@ public:
     // Note that if lhs.data_ == rhs.data_ and lhs.keys_ == rhs.keys_, lhs.positions_
     // and rhs.positions_ must be the same, so they are not compared
     friend constexpr bool operator== (const indexed_d_ary_heap& lhs, const indexed_d_ary_heap& rhs)
-    noexcept(concepts::nothrow_equality_comparable<value_type>)
-    requires concepts::equality_comparable<value_type> {
+    noexcept(concepts::nothrow_equality_comparable<value_type> &&
+             concepts::nothrow_equality_comparable<key_type>)
+    requires concepts::equality_comparable<value_type> && concepts::equality_comparable<key_type> {
         return lhs.size() == rhs.size() &&
                std::ranges::equal(lhs.data_, rhs.data_) &&
                std::ranges::equal(lhs.keys_, rhs.keys_);
@@ -380,7 +416,7 @@ public:
                     return common_ordering::greater;
                 }
             }
-            // assumes total order (equivalent if !(a < b) && !(b < a))
+            // assumes equivalent if !(a < b) && !(b < a)
             return static_cast<common_ordering>(lhs.size() <=> rhs.size());
         };
         if (auto res = cmp(lhs.data_, rhs.data_); res != 0) {
@@ -417,6 +453,7 @@ template <typename T,
           typename KeyStorage = std::vector<KeyType>>
 using indexed_max_heap = indexed_d_ary_heap<T, 4, Container, compare::less<>, KeyType, KeyStorage>;
 
+
 template <typename T,
           std::size_t N,
           typename Compare = compare::less<>,
@@ -425,4 +462,4 @@ using static_indexed_heap = indexed_d_ary_heap<T, 4, urlicht::inplace_vector<T, 
                                                Compare, KeyType, urlicht::inplace_vector<KeyType, N>>;
 
 }
-#endif //INDEXED_BHEAP_H
+#endif //INDEXED_DHEAP_H
