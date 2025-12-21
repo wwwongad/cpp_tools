@@ -4,9 +4,6 @@
 #include <type_traits>
 #include <cstdint>
 #include <bit>
-#include <concepts>
-#include <ostream>
-#include <cassert>
 
 namespace urlicht {
 
@@ -21,6 +18,8 @@ namespace urlicht {
         using deleter_type = Deleter;
 
         static_assert(std::is_object_v<T>, "T must be an object type");
+
+        static_assert(sizeof(pointer) == sizeof(uintptr_t), "T must be of the same size as uintptr_t"); // For bit_cast
 
         static_assert(requires (deleter_type deleter, pointer ptr) { deleter(ptr); },
                      "Deleter must be a function object for T*");
@@ -54,10 +53,12 @@ namespace urlicht {
         /************************* CONSTRUCTORS *************************/
         constexpr tagged_ptr() noexcept = default;
 
+        // Value constructor - from a raw pointer
         explicit constexpr tagged_ptr(const pointer ptr) noexcept
         requires std::default_initializable<deleter_type>
         : ptr_{ std::bit_cast<uintptr_t>(ptr) }, deleter_{} {}
 
+        // Value constructor - from a raw pointer and a deleter
         // UB if deleter_type is a rvalue reference but Del is a lvalue reference, or vice versa
         template <typename Del>
         requires std::constructible_from<deleter_type, Del&&>
@@ -65,18 +66,22 @@ namespace urlicht {
         noexcept(std::is_nothrow_constructible_v<deleter_type, Del&&>)
         : ptr_{ std::bit_cast<uintptr_t>(ptr) },  deleter_{std::forward<Del>(del)} {   }
 
+        // Copy constructor
         constexpr tagged_ptr(const tagged_ptr& other)
         noexcept(std::is_nothrow_copy_constructible_v<deleter_type>)
         requires (!IS_OWNING) && std::copy_constructible<deleter_type> = default;
 
+        // Move constructor
         constexpr tagged_ptr(tagged_ptr&& other)
         noexcept(std::is_nothrow_move_constructible_v<deleter_type>)
         requires std::move_constructible<deleter_type> = default;
 
+        // Copy assignment
         constexpr tagged_ptr& operator=(const tagged_ptr& other)
         noexcept(std::is_nothrow_copy_assignable_v<deleter_type>)
         requires (!IS_OWNING) && std::is_copy_assignable_v<deleter_type> = default;
 
+        // Move assignment
         constexpr tagged_ptr& operator=(tagged_ptr&& other)
         noexcept(std::is_nothrow_move_assignable_v<deleter_type>)
         requires std::is_move_assignable_v<deleter_type> = default;
@@ -155,7 +160,7 @@ namespace urlicht {
         }
 
         [[nodiscard]] constexpr pointer get() const noexcept {
-            return reinterpret_cast<pointer>(ptr_ & PTR_MASK);
+            return std::bit_cast<pointer>(ptr_ & PTR_MASK);
         }
 
         [[nodiscard]] constexpr tag_type tag() const noexcept {
@@ -217,6 +222,8 @@ namespace urlicht {
             return lhs <=> rhs.get();
         }
 
+
+
         constexpr void swap(tagged_ptr& other)
         noexcept(std::is_empty_v<deleter_type> || std::is_nothrow_swappable_v<deleter_type>)
         requires std::swappable<deleter_type> {
@@ -248,10 +255,9 @@ namespace urlicht {
     template <typename T, bool IS_OWNING = false, std::integral SizeType>
     tagged_ptr<T, IS_OWNING> make_tagged(SizeType size)
     requires std::is_array_v<T> && std::default_initializable<std::remove_extent_t<T>> {
-        return tagged_ptr<T, IS_OWNING>(new std::remove_extent_t<T>[size]{});
+        using element_type = std::remove_extent_t<T>;
+        return tagged_ptr<T, IS_OWNING>(new element_type[size]{});
     }
 }
 
 #endif //TAGGED_PTR_H
-
-
