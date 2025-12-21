@@ -34,6 +34,7 @@ namespace urlicht::concepts {
             std::input_iterator<Iter> &&
             std::constructible_from<T, std::iter_reference_t<Iter>>;
 
+	// Always false for a proxy iterator
 	template <typename Iter>
 	concept rvalue_iterator =
 			std::input_iterator<Iter> &&
@@ -74,6 +75,12 @@ namespace urlicht::concepts {
     || requires(Compare comp, const T& val, const U& val2) {
         { comp(val2, val) } -> std::convertible_to<bool>;
     };
+
+	template<typename Compare, typename T, typename U = T>
+	concept one_way_comparison_functor =
+	requires(Compare comp, const T& val, const U& val2) {
+		{ comp(val, val2) } -> std::convertible_to<bool>;
+	};
 
 	template <typename T, typename U = T>
 	concept less_comparable =
@@ -133,6 +140,7 @@ namespace urlicht::concepts {
 
 	/************************* CONCEPTS FOR CONTAINERS *************************/
 	// The following concepts are strictly STL-compliant
+	// Deprecates push_*/insert if their emplace_* counterparts are available
 
 	template <typename Alloc>
 	concept allocator = std::default_initializable<Alloc> && requires {
@@ -368,7 +376,7 @@ namespace urlicht::concepts {
         requires (Cont& c, typename Cont::size_type size) { c.resize(size); });
 
 
-	// contiguous container, e.g. std::vector
+	// contiguous container, e.g. std::vector, urlicht::inplace_vector
 	template <typename Cont>
 	concept contiguous_container =
 		random_access_container<Cont> &&
@@ -389,11 +397,12 @@ namespace urlicht::concepts {
 		typename Deq::allocator_type;
 	}
 	&& requires(Deq& d, typename Deq::value_type value) {
-		{ d.emplace_front(value) } -> std::same_as<typename Deq::reference>;
-		{ d.emplace_front(std::move(value)) } -> std::same_as<typename Deq::reference>;
+		{ d.emplace_front(value) } -> std::same_as<typename Deq::value_type>;
+		{ d.emplace_front(std::move(value)) } -> std::same_as<typename Deq::value_type>;
 		// Optional: { d.prepend_range(d) } -> std::same_as<void>;
 	};
 
+	// Utility for optional reservation
 	template<typename Container>
 	concept reservable_container = container<Container> &&
 		requires(Container cont, typename Container::size_type size) {
@@ -402,8 +411,209 @@ namespace urlicht::concepts {
 		{ cont.shrink_to_fit() } -> std::same_as<void>;
 	};
 
+
+	// e.g. Supports non-bucket-based implementations
+	template <typename Cont>
+	concept unordered_set =
+	    container<Cont> &&
+	    std::forward_iterator<typename Cont::iterator> &&
+	    std::forward_iterator<typename Cont::const_iterator> &&
+	    std::same_as<typename Cont::value_type, typename Cont::key_type>
+    && requires {
+        typename Cont::key_type;
+        typename Cont::hasher;
+        typename Cont::key_equal;
+        typename Cont::allocator_type;
+    }
+    && requires(Cont& c,
+                typename Cont::key_type key,
+                typename Cont::const_iterator cpos,
+                typename Cont::size_type bucket_idx) {
+		// Capacity
+		{ std::as_const(c).size() } -> std::same_as<typename Cont::size_type>;
+
+        // Observers
+        { c.hash_function() } -> std::same_as<typename Cont::hasher>;
+        { c.key_eq() } -> std::same_as<typename Cont::key_equal>;
+
+        // Modifiers
+        { c.emplace(key) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.emplace(std::move(key)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		/* Optional:
+		 * { c.emplace_hint(cpos, key) } -> std::same_as<typename Cont::iterator>;
+		 * { c.emplace_hint(cpos, std::move(key) } -> std::same_as<typename Cont::iterator>;
+		 */
+		// Only overloads not covered by the above
+		{ c.insert(cpos, cpos) } -> std::same_as<void>;
+		{ c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+        { c.erase(cpos) } -> std::same_as<typename Cont::iterator>;
+        { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+        { c.clear() } -> std::same_as<void>;
+		{ c.merge(c) } -> std::same_as<void>;
+		{ c.merge(std::move(c)) } -> std::same_as<void>;
+		// Optional: { c.insert_range(c) } -> std::same_as<void>;
+		// Optional: { c.insert_range(std::move(c) } -> std::same_as<void>;
+
+        // Lookup
+        { c.find(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).find(key) } -> std::same_as<typename Cont::const_iterator>;
+        { c.count(key) } -> std::same_as<typename Cont::size_type>;
+        { c.contains(key) } -> std::same_as<bool>;
+        { c.equal_range(key) } -> std::same_as<std::pair<typename Cont::iterator, typename Cont::iterator>>;
+
+        // Hash Policy
+        { c.load_factor() } -> std::same_as<float>;
+        { c.max_load_factor() } -> std::same_as<float>;
+        { c.max_load_factor(1.0f) } -> std::same_as<void>;
+        { c.rehash(bucket_idx) } -> std::same_as<void>;
+        { c.reserve(bucket_idx) } -> std::same_as<void>;
+    };
+
+	template <typename Cont>
+	concept bucket_unordered_set =
+		unordered_set<Cont>
+	&& requires() {
+		typename Cont::node_type;
+		typename Cont::insert_return_type;
+		typename Cont::local_iterator;
+		typename Cont::const_local_iterator;
+		typename Cont::insert_return_type;
+	}
+	&& requires(Cont& c,
+				typename Cont::key_type key,
+				typename Cont::const_iterator cpos,
+				typename Cont::size_type bucket_idx,
+				typename Cont::node_type node) {
+		// Modifiers
+		{ c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
+		{ c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
+		{ c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
+		{ c.extract(key) } ->std::same_as<typename Cont::node_type>;
+
+		// Bucket Interface
+		{ c.bucket_count() } -> std::same_as<typename Cont::size_type>;
+		{ c.max_bucket_count() } -> std::same_as<typename Cont::size_type>;
+		{ c.bucket_size(bucket_idx) } -> std::same_as<typename Cont::size_type>;
+		{ c.bucket(key) } -> std::same_as<typename Cont::size_type>;
+		{ c.begin(bucket_idx) } -> std::same_as<typename Cont::local_iterator>;
+		{ std::as_const(c).begin(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
+		{ c.end(bucket_idx) } -> std::same_as<typename Cont::local_iterator>;
+		{ std::as_const(c).end(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
+	};
+
+
+	// Compatible with non-bucket-based implementations
+	template <typename Cont>
+	concept unordered_map =
+		container<Cont> &&
+		std::forward_iterator<typename Cont::iterator> &&
+		std::forward_iterator<typename Cont::const_iterator> &&
+		std::same_as<typename Cont::value_type, std::pair<const typename Cont::key_type, typename Cont::mapped_type>>
+    && requires {
+        typename Cont::key_type;
+        typename Cont::mapped_type;
+        typename Cont::hasher;
+        typename Cont::key_equal;
+        typename Cont::allocator_type;
+    }
+    && requires(Cont& c,
+                typename Cont::key_type key,
+                typename Cont::mapped_type val,
+                typename Cont::value_type pair_val,
+                typename Cont::const_iterator cpos,
+                typename Cont::size_type bucket_idx) {
+        // Capacity
+        { std::as_const(c).size() } -> std::same_as<typename Cont::size_type>;
+
+        // Observers
+        { c.hash_function() } -> std::same_as<typename Cont::hasher>;
+        { c.key_eq() } -> std::same_as<typename Cont::key_equal>;
+
+        // Element Access
+        { c[key] } -> std::same_as<typename Cont::mapped_type&>;
+        { c.at(key) } -> std::same_as<typename Cont::mapped_type&>;
+        { std::as_const(c).at(key) } -> std::same_as<const typename Cont::mapped_type&>;
+
+        // Modifiers
+        { c.emplace(pair_val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.emplace(std::move(pair_val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		/* Optional: some implementations do not support these
+		 * { c.emplace_hint(cpos, pair_val) } -> std::same_as<typename Cont::iterator>;
+		 * { c.emplace_hint(cpos, std::move(pair_val)) } -> std::same_as<typename Cont::iterator>;
+		*/
+        { c.try_emplace(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(cpos, key, val) } -> std::same_as<typename Cont::iterator>;
+		{ c.try_emplace(cpos, key, std::move(val)) } -> std::same_as<typename Cont::iterator>;
+		{ c.try_emplace(cpos, std::move(key), val) } -> std::same_as<typename Cont::iterator>;
+
+        { c.insert_or_assign(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+        { c.insert_or_assign(cpos, key, val) } -> std::same_as<typename Cont::iterator>;
+		{ c.insert_or_assign(cpos, key, std::move(val)) } -> std::same_as<typename Cont::iterator>;
+		{ c.insert_or_assign(cpos, std::move(key), val) } -> std::same_as<typename Cont::iterator>;
+
+		// Insert - overloads not covered by the above only
+        { c.insert(cpos, cpos) } -> std::same_as<void>; // Since cpos is also an input iterator
+        { c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+        { c.erase(cpos) } -> std::same_as<typename Cont::iterator>;
+		{ c.erase(cpos, cpos) } -> std::same_as<typename Cont::iterator>;
+        { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+        { c.clear() } -> std::same_as<void>;
+        { c.merge(c) } -> std::same_as<void>;
+        { c.merge(std::move(c)) } -> std::same_as<void>;
+		// Optional: { c.insert_range(c) } -> std::same_as<void>;
+		// Optional: { c.insert_range(std::move(c) } -> std::same_as<void>;
+
+        // Lookup
+        { c.find(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).find(key) } -> std::same_as<typename Cont::const_iterator>;
+        { c.count(key) } -> std::same_as<typename Cont::size_type>;
+        { c.contains(key) } -> std::same_as<bool>;
+        { c.equal_range(key) } -> std::same_as<std::pair<typename Cont::iterator, typename Cont::iterator>>;
+
+        // Hash Policy
+        { c.load_factor() } -> std::same_as<float>;
+        { c.max_load_factor() } -> std::same_as<float>;
+        { c.max_load_factor(1.0f) } -> std::same_as<void>;
+        { c.rehash(bucket_idx) } -> std::same_as<void>;
+        { c.reserve(bucket_idx) } -> std::same_as<void>;
+    };
+
+	template <typename Cont>
+	concept bucket_unordered_map =
+		unordered_map<Cont>
+    && requires() {
+        typename Cont::node_type;
+        typename Cont::insert_return_type;
+        typename Cont::local_iterator;
+        typename Cont::const_local_iterator;
+    }
+    && requires(Cont& c,
+                typename Cont::key_type key,
+                typename Cont::const_iterator cpos,
+                typename Cont::size_type bucket_idx,
+                typename Cont::node_type node) {
+        // Modifiers (Node Handle)
+        { c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
+        { c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
+        { c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
+        { c.extract(key) } -> std::same_as<typename Cont::node_type>;
+
+        // Bucket Interface
+        { c.bucket_count() } -> std::same_as<typename Cont::size_type>;
+        { c.max_bucket_count() } -> std::same_as<typename Cont::size_type>;
+        { c.bucket_size(bucket_idx) } -> std::same_as<typename Cont::size_type>;
+        { c.bucket(key) } -> std::same_as<typename Cont::size_type>;
+        { c.begin(bucket_idx) } -> std::same_as<typename Cont::local_iterator>;
+        { std::as_const(c).begin(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
+        { c.end(bucket_idx) } -> std::same_as<typename Cont::local_iterator>;
+        { std::as_const(c).end(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
+    };
+
 }
 
 
 #endif //CONCEPTS_UTILITY_H
-
