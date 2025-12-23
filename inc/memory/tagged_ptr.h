@@ -11,7 +11,6 @@
 #include <functional>
 #include <concepts>
 #include <format>
-#include <syncstream>
 
 
 namespace urlicht {
@@ -530,3 +529,4 @@ namespace std {
 } // namespace std
 
     #endif //TAGGED_PTR_H
+
