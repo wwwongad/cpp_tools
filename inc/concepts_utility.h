@@ -48,12 +48,12 @@ namespace urlicht::concepts {
 	template <typename Rng>
 	concept lvalue_range =
 			std::ranges::input_range<Rng> &&
-			std::is_lvalue_reference_v<std::ranges::range_reference_t<Rng>>;
+			std::is_lvalue_reference_v<Rng>;
 
 	template <typename Rng>
 	concept rvalue_range =
 			std::ranges::input_range<Rng> &&
-			std::is_rvalue_reference_v<std::ranges::range_reference_t<Rng>>;
+			std::is_rvalue_reference_v<Rng>;
 
 	template <typename Sentinel, typename Iter>
 	concept sentinel_or_iter =
@@ -140,7 +140,7 @@ namespace urlicht::concepts {
 
 	/************************* CONCEPTS FOR CONTAINERS *************************/
 	// The following concepts are strictly STL-compliant
-	// Deprecates push_*/insert if their emplace_* counterparts are available
+	// Deprecates inefficient methods if their more efficient counterparts are available
 
 	template <typename Alloc>
 	concept allocator = std::default_initializable<Alloc> && requires {
@@ -411,8 +411,9 @@ namespace urlicht::concepts {
 		{ cont.shrink_to_fit() } -> std::same_as<void>;
 	};
 
+	// For unordered_map and unordered_set, methods with hint iterator are not required
 
-	// e.g. Supports non-bucket-based implementations
+	// Supports non-bucket-based implementations
 	template <typename Cont>
 	concept unordered_set =
 	    container<Cont> &&
@@ -439,15 +440,15 @@ namespace urlicht::concepts {
         // Modifiers
         { c.emplace(key) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 		{ c.emplace(std::move(key)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
-		/* Optional:
-		 * { c.emplace_hint(cpos, key) } -> std::same_as<typename Cont::iterator>;
-		 * { c.emplace_hint(cpos, std::move(key) } -> std::same_as<typename Cont::iterator>;
-		 */
 		// Only overloads not covered by the above
-		{ c.insert(cpos, cpos) } -> std::same_as<void>;
+		{ c.insert(cpos, cpos) } -> std::same_as<void>;  // simulates c.insert(InputIt first, InputIt last);
 		{ c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+
+		// Erasure
         { c.erase(cpos) } -> std::same_as<typename Cont::iterator>;
+		{ c.erase(cpos, cpos) } -> std::same_as<typename Cont::iterator>;
         { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+
         { c.clear() } -> std::same_as<void>;
 		{ c.merge(c) } -> std::same_as<void>;
 		{ c.merge(std::move(c)) } -> std::same_as<void>;
@@ -485,8 +486,8 @@ namespace urlicht::concepts {
 				typename Cont::size_type bucket_idx,
 				typename Cont::node_type node) {
 		// Modifiers
+		{ c.insert(node) } -> std::same_as<typename Cont::insert_return_type>;
 		{ c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
-		{ c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
 		{ c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
 		{ c.extract(key) } ->std::same_as<typename Cont::node_type>;
 
@@ -535,32 +536,26 @@ namespace urlicht::concepts {
         { std::as_const(c).at(key) } -> std::same_as<const typename Cont::mapped_type&>;
 
         // Modifiers
-        { c.emplace(pair_val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
-		{ c.emplace(std::move(pair_val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
-		/* Optional: some implementations do not support these
-		 * { c.emplace_hint(cpos, pair_val) } -> std::same_as<typename Cont::iterator>;
-		 * { c.emplace_hint(cpos, std::move(pair_val)) } -> std::same_as<typename Cont::iterator>;
-		*/
+		// emplace is deprecated and replaced by try_emplace
         { c.try_emplace(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 		{ c.try_emplace(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 		{ c.try_emplace(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
-		{ c.try_emplace(cpos, key, val) } -> std::same_as<typename Cont::iterator>;
-		{ c.try_emplace(cpos, key, std::move(val)) } -> std::same_as<typename Cont::iterator>;
-		{ c.try_emplace(cpos, std::move(key), val) } -> std::same_as<typename Cont::iterator>;
+		{ c.try_emplace(std::move(key), std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 
         { c.insert_or_assign(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 		{ c.insert_or_assign(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 		{ c.insert_or_assign(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
-        { c.insert_or_assign(cpos, key, val) } -> std::same_as<typename Cont::iterator>;
-		{ c.insert_or_assign(cpos, key, std::move(val)) } -> std::same_as<typename Cont::iterator>;
-		{ c.insert_or_assign(cpos, std::move(key), val) } -> std::same_as<typename Cont::iterator>;
+		{ c.insert_or_assign(std::move(key), std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
 
 		// Insert - overloads not covered by the above only
         { c.insert(cpos, cpos) } -> std::same_as<void>; // Since cpos is also an input iterator
         { c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+
+		// Erasure
         { c.erase(cpos) } -> std::same_as<typename Cont::iterator>;
 		{ c.erase(cpos, cpos) } -> std::same_as<typename Cont::iterator>;
         { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+
         { c.clear() } -> std::same_as<void>;
         { c.merge(c) } -> std::same_as<void>;
         { c.merge(std::move(c)) } -> std::same_as<void>;
@@ -597,8 +592,8 @@ namespace urlicht::concepts {
                 typename Cont::size_type bucket_idx,
                 typename Cont::node_type node) {
         // Modifiers (Node Handle)
+		{ c.insert(node) } -> std::same_as<typename Cont::insert_return_type>;
         { c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
-        { c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
         { c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
         { c.extract(key) } -> std::same_as<typename Cont::node_type>;
 
@@ -611,6 +606,163 @@ namespace urlicht::concepts {
         { std::as_const(c).begin(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
         { c.end(bucket_idx) } -> std::same_as<typename Cont::local_iterator>;
         { std::as_const(c).end(bucket_idx) } -> std::same_as<typename Cont::const_local_iterator>;
+    };
+
+	// A rigorous implementation of map should accept hinted insertion
+	// That takes a const iterator to indicate whether the value should be placed
+	template <typename Cont>
+	concept map =
+		container<Cont> &&
+		std::bidirectional_iterator<typename Cont::iterator> &&
+		std::bidirectional_iterator<typename Cont::const_iterator> &&
+		std::same_as<typename Cont::value_type,
+					 std::pair<const typename Cont::key_type, typename Cont::mapped_type>>
+    && requires {
+        typename Cont::key_type;
+        typename Cont::mapped_type;
+        typename Cont::key_compare;
+		typename Cont::value_compare;
+        typename Cont::allocator_type;
+		typename Cont::node_type;
+		typename Cont::insert_return_type;
+    }
+    && requires(Cont& c,
+                typename Cont::key_type key,
+                typename Cont::mapped_type val,
+                typename Cont::value_type pair_val,
+                typename Cont::const_iterator cpos,
+                typename Cont::node_type node) {
+        // Capacity
+        { std::as_const(c).size() } -> std::same_as<typename Cont::size_type>;
+
+        // Observers
+        { c.key_comp() } -> std::same_as<typename Cont::key_equal>;
+		{ c.value_comp() } -> std::same_as<typename Cont::value_compare>;
+
+        // Element Access
+        { c[key] } -> std::same_as<typename Cont::mapped_type&>;
+        { c.at(key) } -> std::same_as<typename Cont::mapped_type&>;
+        { std::as_const(c).at(key) } -> std::same_as<const typename Cont::mapped_type&>;
+
+        // Modifiers
+		// emplace and emplace_hint are deprecated and replaced by try_emplace
+        { c.try_emplace(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(std::move(key), std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+
+		{ c.try_emplace(cpos, key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(cpos, key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(cpos, std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.try_emplace(cpos, std::move(key), std::move(val)) }
+					-> std::same_as<std::pair<typename Cont::iterator, bool>>;
+
+        { c.insert_or_assign(key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(std::move(key), std::move(val)) }
+					-> std::same_as<std::pair<typename Cont::iterator, bool>>;
+
+		{ c.insert_or_assign(cpos, key, val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(cpos, key, std::move(val)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(cpos, std::move(key), val) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.insert_or_assign(cpos, std::move(key), std::move(val)) }
+					-> std::same_as<std::pair<typename Cont::iterator, bool>>;
+
+		// Insert - overloads not covered by the above only
+        { c.insert(cpos, cpos) } -> std::same_as<void>; // Since cpos is also an input iterator
+        { c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+		{ c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
+		{ c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
+
+		// Erasure
+        { c.erase(cpos) } -> std::same_as<typename Cont::iterator>;
+		{ c.erase(cpos, cpos) } -> std::same_as<typename Cont::iterator>;
+        { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+
+		{ c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
+		{ c.extract(key) } -> std::same_as<typename Cont::node_type>;
+        { c.clear() } -> std::same_as<void>;
+        { c.merge(c) } -> std::same_as<void>;
+        { c.merge(std::move(c)) } -> std::same_as<void>;
+		// Optional: { c.insert_range(c) } -> std::same_as<void>;
+		// Optional: { c.insert_range(std::move(c) } -> std::same_as<void>;
+
+        // Lookup
+        { c.find(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).find(key) } -> std::same_as<typename Cont::const_iterator>;
+        { c.count(key) } -> std::same_as<typename Cont::size_type>;
+        { c.contains(key) } -> std::same_as<bool>;
+        { c.equal_range(key) } -> std::same_as<std::pair<typename Cont::iterator, typename Cont::iterator>>;
+		{ c.lower_bound(key) } -> std::same_as<typename Cont::iterator>;
+		{ std::as_const(c).lower_bound(key) } -> std::same_as<typename Cont::const_iterator>;
+		{ c.upper_bound(key) } -> std::same_as<typename Cont::iterator>;
+		{ std::as_const(c).upper_bound(key) } -> std::same_as<typename Cont::const_iterator>;
+    };
+
+
+	template <typename Cont>
+	concept set =
+		container<Cont> &&
+		std::bidirectional_iterator<typename Cont::iterator> &&
+		std::bidirectional_iterator<typename Cont::const_iterator> &&
+		std::same_as<typename Cont::value_type, typename Cont::key_type>
+    && requires {
+        typename Cont::key_type;
+        typename Cont::key_compare;
+        typename Cont::allocator_type;
+        typename Cont::node_type;
+        typename Cont::insert_return_type;
+    }
+    && requires(Cont& c,
+                typename Cont::key_type key,
+                typename Cont::const_iterator cpos,
+                typename Cont::node_type node) {
+        // Capacity
+        { std::as_const(c).size() } -> std::same_as<typename Cont::size_type>;
+
+        // Observers
+        { c.key_comp() } -> std::same_as<typename Cont::key_compare>;
+        { c.value_comp() } -> std::same_as<typename Cont::value_compare>;
+
+        // Modifiers
+        { c.emplace(key) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+		{ c.emplace(std::move(key)) } -> std::same_as<std::pair<typename Cont::iterator, bool>>;
+        { c.emplace_hint(cpos, key) } -> std::same_as<typename Cont::iterator>;
+		{ c.emplace_hint(cpos, std::move(key)) } -> std::same_as<typename Cont::iterator>;
+
+        // Insert - only the non-overlapping overloads
+        { c.insert(cpos, cpos) } -> std::same_as<void>;
+        { c.insert(std::declval<std::initializer_list<typename Cont::value_type>>()) } -> std::same_as<void>;
+		{ c.insert(node) } -> std::same_as<typename Cont::insert_return_type>;
+        { c.insert(std::move(node)) } -> std::same_as<typename Cont::insert_return_type>;
+		{ c.insert(cpos, node) } -> std::same_as<typename Cont::iterator>;
+        { c.insert(cpos, std::move(node)) } -> std::same_as<typename Cont::iterator>;
+
+        // Erasure
+        { c.erase(cpos) } -> std::same_as<typename Cont::iterator>; // Amortized constant
+        { c.erase(cpos, cpos) } -> std::same_as<typename Cont::iterator>;
+        { c.erase(key) } -> std::same_as<typename Cont::size_type>;
+
+        // Extraction
+        { c.extract(cpos) } -> std::same_as<typename Cont::node_type>;
+        { c.extract(key) } -> std::same_as<typename Cont::node_type>;
+
+        { c.clear() } -> std::same_as<void>;
+        { c.merge(c) } -> std::same_as<void>;
+        { c.merge(std::move(c)) } -> std::same_as<void>;
+
+        // Lookup
+        { c.find(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).find(key) } -> std::same_as<typename Cont::const_iterator>;
+        { c.count(key) } -> std::same_as<typename Cont::size_type>;
+        { c.contains(key) } -> std::same_as<bool>;
+        { c.equal_range(key) } -> std::same_as<std::pair<typename Cont::iterator, typename Cont::iterator>>;
+        { std::as_const(c).equal_range(key) } -> std::same_as<std::pair<typename Cont::const_iterator, typename Cont::const_iterator>>;
+        { c.lower_bound(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).lower_bound(key) } -> std::same_as<typename Cont::const_iterator>;
+        { c.upper_bound(key) } -> std::same_as<typename Cont::iterator>;
+        { std::as_const(c).upper_bound(key) } -> std::same_as<typename Cont::const_iterator>;
     };
 
 }
