@@ -1,4 +1,3 @@
-
 #ifndef D_ARY_HEAP_H
 #define D_ARY_HEAP_H
 #include <Containers/inplace_vector.h>
@@ -36,8 +35,7 @@ namespace urlicht {
     private:
         // Assumes nothrow move assignable value_type
         constexpr void heapify_up(size_type from)
-        noexcept(noexcept(this->compare_(std::declval<value_type>(),
-                                         std::declval<value_type>()))) {
+        noexcept(std::is_nothrow_invocable_v<Compare, value_type, value_type>) {
             value_type val = std::move(this->data_[from]);
             size_type par = (from - 1) / d;
             while(from && this->compare_(this->data_[par], val)) {
@@ -49,8 +47,7 @@ namespace urlicht {
         }
 
         constexpr void heapify_down(size_type idx)
-        noexcept(noexcept(this->compare_(std::declval<value_type>(),
-                                         std::declval<value_type>()))) {
+        noexcept(std::is_nothrow_invocable_v<Compare, value_type, value_type>) {
             const size_type n = this->data_.size();
             value_type val = std::move(this->data_[idx]);
 
@@ -138,45 +135,47 @@ namespace urlicht {
             }
         }
 
-        template <std::input_iterator InputIt>
-        requires std::constructible_from<value_type, std::iter_reference_t<InputIt>>
-        constexpr void push_range(InputIt first, InputIt last) {
+        template <concepts::compatible_iterator<value_type> InputIt,
+                  concepts::sentinel_or_iter<InputIt> Sentinel>
+        constexpr size_type push_range(InputIt first, Sentinel last) {
             // Basic exception safety - takes in as many elements as possible until it throws
-            if constexpr (std::random_access_iterator<InputIt>) {
-                const size_type n = this->size(), m = static_cast<size_type>(last - first);
-                if constexpr (concepts::reservable_container<Container>) {
-                    this->data_.reserve(n + m);
-                }
+            const auto n = this->size(); // Original size
+            const auto m = static_cast<size_type>(std::distance(first, last)); // No. of new elements
+            if constexpr (concepts::reservable_container<Container>) {
+                this->data_.reserve(n + m);
+            }
 
-                auto logdn = [](const size_type x) -> size_type { // an approximate value of logd(n)
-                    if (x < d) return 1;
-                    if constexpr (d == 2) {
-                        return static_cast<size_type>(std::bit_width(x) - 1);
-                    }
+            auto logdn = [](const size_type x) -> size_type { // an approximate value of logd(n) in O(1)
+                if (x < d) {
+                    return 1;
+                }
+                if constexpr (d == 2) {
+                    return static_cast<size_type>(std::bit_width(x) - 1);
+                } else {
                     return static_cast<size_type>(std::bit_width(x) / std::bit_width(d));
-                };
+                }
+            };
 
-                //rebuild if m >= (n / max(1, log2(n))), O(n + m)
-                if (!n || m >= n / logdn(n)) {
-                    for (; first != last; ++first) {
-                        this->data_.emplace_back(std::forward<decltype(*first)>(*first));
-                    }
-                    this->build_heap();
-                    return;
+            //rebuild if m >= (n / max(1, log2(n))), O(n + m)
+            if (!n || m >= n / logdn(n)) {
+                for (; first != last; ++first) {
+                    this->data_.emplace_back(*first);
+                }
+                this->build_heap();
+            } else {
+                //otherwise, heapify one-by-one, O(m log(n + m))
+                auto start_pos_ = n;
+                for (; first != last; ++first, ++start_pos_) {
+                    this->data_.emplace_back(*first);
+                    this->heapify_up(start_pos_);
                 }
             }
-            //otherwise, or for input iterator, heapify one-by-one, O(m log(n + m))
-            size_type start_pos_ = this->size();
-            for (; first != last; ++first, ++start_pos_) {
-                this->data_.emplace_back(std::forward<decltype(*first)>(*first));
-                this->heapify_up(start_pos_);
-            }
+            return m;
         }
 
-        template <std::ranges::input_range Rng>
-        requires std::constructible_from<value_type, std::ranges::range_reference_t<Rng>>
+        template <concepts::compatible_range<value_type> Rng>
         constexpr void push_range(Rng&& r) {
-            if constexpr (std::is_rvalue_reference_v<decltype(r)>) {
+            if constexpr (concepts::rvalue_range<Rng&&>) {
                 this->push_range(
                         std::make_move_iterator(std::ranges::begin(r)),
                         std::make_move_iterator(std::ranges::end(r)));
@@ -187,7 +186,7 @@ namespace urlicht {
 
         constexpr void merge(d_ary_heap&& other) {
             this->push_range(std::make_move_iterator(other.begin()),
-                std::make_move_iterator(other.end()));
+                             std::make_move_iterator(other.end()));
             other.clear();
         }
 
@@ -198,7 +197,7 @@ namespace urlicht {
 
         constexpr void swap(d_ary_heap& other)
         noexcept(std::is_nothrow_swappable_v<Container> &&
-                std::is_nothrow_swappable_v<Compare>)
+                 std::is_nothrow_swappable_v<Compare>)
         requires std::swappable<Compare> {
             using std::swap;
             swap(this->data_, other.data_);
@@ -213,35 +212,6 @@ namespace urlicht {
             lhs.swap(rhs);
         }
 
-        friend constexpr bool operator== (const d_ary_heap& lhs, const d_ary_heap& rhs)
-        noexcept(concepts::nothrow_equality_comparable<value_type>)
-        requires concepts::equality_comparable<value_type> {
-            return lhs.size() == rhs.size() && std::ranges::equal(lhs.data_, rhs.data_);
-        }
-
-        constexpr friend auto operator<=>(const d_ary_heap& lhs, const d_ary_heap& rhs)
-        noexcept((std::three_way_comparable<value_type> && concepts::nothrow_three_way_comparable<value_type>)
-            ||  (!std::three_way_comparable<value_type> && concepts::nothrow_less_comparable<value_type>))
-        requires concepts::less_comparable<value_type> {
-            using ordering = std::conditional_t<std::three_way_comparable<value_type>,
-                                                std::compare_three_way_result_t<value_type>,
-                                                std::weak_ordering>;
-            if constexpr (std::three_way_comparable<T>) {
-                auto res = std::lexicographical_compare_three_way(lhs.cbegin(), lhs.cend(),
-                                                                  rhs.cbegin(), rhs.cend());
-                return static_cast<ordering>(res);
-            } else {
-                const auto sz = std::min(lhs.size(), rhs.size());
-                for (size_type i = 0; i < sz; ++i) {
-                    if (lhs[i] < rhs[i]) {
-                        return ordering::less;
-                    } if (rhs[i] < lhs[i]) {
-                        return ordering::greater;
-                    }
-                }
-                return static_cast<ordering>(lhs.size() <=> rhs.size());
-            }
-        }
     };
 
     template <typename T, typename Container = std::vector<T>, typename Compare = compare::less<>>
@@ -258,6 +228,13 @@ namespace urlicht {
 
     template <typename T, std::size_t N, typename Compare = compare::less<>>
     using static_heap = d_ary_heap<T, 4, inplace_vector<T, N>, Compare>;
+
+    // CTAD
+    template <typename T>
+    d_ary_heap(std::initializer_list<T>) -> d_ary_heap<T>;
+
+    template <concepts::random_access_container Container>
+    d_ary_heap(Container) -> d_ary_heap<typename Container::value_type>;
 
 }
 #endif //D_ARY_HEAP_H

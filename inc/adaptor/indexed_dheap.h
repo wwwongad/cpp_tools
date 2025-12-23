@@ -3,10 +3,15 @@
 #pragma once
 #include <cstdint>
 #include <stdexcept>
+#include <algorithm> // for std::min
+#include <bit>       // for std::bit_width
+#include <iterator>  // for std::distance, std::make_move_iterator
+#include <utility>   // for std::move, std::forward
 #include "base_heap_.h"
 #include <unordered_map>
 #include <Containers/inplace_vector.h>
 #include "../compare.h"
+
 
 namespace urlicht{
 
@@ -53,8 +58,8 @@ private:
     position_storage positions_{}; // positions_[key] -> the index of the value associated with the key in data_[pos]
     key_type next_key{};
 
-    [[nodiscard]] static constexpr size_t parent(const size_t i) noexcept { return (i - 1) / d; }
-    [[nodiscard]] static constexpr size_t left(const size_t i) noexcept { return d * i + 1; }
+    [[nodiscard]] static constexpr size_type parent(const size_t i) noexcept { return (i - 1) / d; }
+    [[nodiscard]] static constexpr size_type left(const size_t i) noexcept { return d * i + 1; }
 
     constexpr void erase_at(typename position_storage::const_iterator it) {
         // the key must exist; UB otherwise
@@ -101,6 +106,7 @@ private:
             throw;
         }
     }
+
 
     // No exception guarentee
     constexpr void heapify_up(size_type from) {
@@ -161,10 +167,11 @@ private:
         }
     }
 
-    constexpr void initialize_keys() { // Initialize keys_ and positions_ after data_ is initialized
+    constexpr void initialize_keys() { // Initialize keys and positions after the values are initialized
         if constexpr (concepts::reservable_container<position_storage>) {
             this->positions_.reserve(this->data_.size());
-        } if constexpr (concepts::reservable_container<key_storage>) {
+        }
+        if constexpr (concepts::reservable_container<key_storage>) {
             this->keys_.reserve(this->data_.size());
         }
         for (size_type i = 0; i < this->size(); ++i) {
@@ -179,6 +186,69 @@ private:
             }
             ++this->next_key;
         }
+    }
+
+    template <concepts::compatible_iterator<value_type> Iter,
+              concepts::sentinel_or_iter<Iter> Sentinel>
+    constexpr size_type push_range_impl(Iter first, Sentinel last) {
+        // Basic exception safety in general - takes in as many elements as possible until it throws
+        // Strong exception gurantee for each input - see the above
+        const auto n = this->size();
+        auto curr_pos = n;
+        size_type m = 0;
+
+        if constexpr (std::forward_iterator<Iter>) {
+            m = static_cast<size_type>(std::distance(first, last));
+            // Reserve if possible
+            if constexpr (concepts::reservable_container<Container>) {
+                this->data_.reserve(n + m);
+            }
+            if constexpr (concepts::reservable_container<key_storage>) {
+                this->keys_.reserve(n + m);
+            }
+            if constexpr (concepts::reservable_container<position_storage>) {
+                this->positions_.reserve(n + m);
+            }
+
+            auto logdn = [](const size_type x) -> size_type { // an approximate value of logd(n) in O(1)
+                if (x < d) {
+                    return 1;
+                }
+                if constexpr (d == 2) {
+                    return static_cast<size_type>(std::bit_width(x) - 1);
+                } else {
+                    return static_cast<size_type>(std::bit_width(x) / std::bit_width(d));
+                }
+            };
+
+            //rebuild if m >= (n / max(1, log2(n))), O(n + m)
+            if (!n || m >= n / logdn(n)) {
+                for (; first != last; ++first, ++curr_pos) {
+                    const auto key = this->next_key;
+                    this->insert_all_noheapify(key, curr_pos, *first);
+                    ++this->next_key;
+                }
+                this->build_heap();
+            } else {
+                // Otherwise, heapify one-by-one, O(m log(n + m))
+                for (; first != last; ++first, ++curr_pos) {
+                    const auto key = this->next_key;
+                    this->insert_all_noheapify(key, curr_pos, *first);
+                    this->heapify_up(curr_pos);
+                    ++this->next_key;
+                }
+            }
+        } else {  // if constexpr forward iterator
+            // Fall back to per-element insertion for input iterators
+            for (; first != last; ++first, ++curr_pos) {
+                const auto key = this->next_key;
+                this->insert_all_noheapify(key, curr_pos, *first);
+                this->heapify_up(curr_pos);
+                ++this->next_key;
+                ++m;
+            }
+        }
+        return m;
     }
 
 public:
@@ -243,48 +313,50 @@ public:
         return key;
     }
 
+
     template <concepts::compatible_iterator<value_type> Iter,
               concepts::sentinel_or_iter<Iter> Sentinel,
               std::output_iterator<key_type> OpIter>
     constexpr void push_range(Iter first, Sentinel last, OpIter out) {
-        // Basic exception safety in general - takes in as many elements as possible until it throws
-        // Strong exception gurantee for each input - see the above
-        if constexpr (std::random_access_iterator<Iter>) {
-            const size_type n = this->size(), m = static_cast<size_type>(last - first);
-            if constexpr (concepts::reservable_container<Container>) {
-                this->data_.reserve(n + m);
-            } if constexpr (concepts::reservable_container<key_storage>) {
-                this->keys_.reserve(n + m);
-            } if constexpr (concepts::reservable_container<position_storage>) {
-                this->positions_.reserve(n + m);
-            }
+        // For exception guarantee, see the above
+        const key_type first_key = this->next_key;
+        const size_type m = push_range_impl(first, last);
 
-            auto logdn = [](const size_type x) -> size_type { // an approximate value of logd(n)
-                if (x < d) return 1;
-                if constexpr (d == 2) {
-                    return static_cast<size_type>(std::bit_width(x) - 1);
-                }
-                return static_cast<size_type>(std::bit_width(x) / std::bit_width(d));
-            };
-            //rebuild if m >= (n / max(1, log2(n))), O(n + m)
-            if (!n || m >= n / logdn(n)) {
-                for (; first != last; ++first) {
-                    const auto key = this->next_key;
-                    const auto size = this->data_.size();
-                    this->insert_all_noheapify(key, size, std::forward<decltype(*first)>(*first));
-                    *out++ = this->next_key++;
-                }
-                this->build_heap();
-                return;
-            }
+        for (key_type key = first_key; key < first_key + m; ++key) {
+            *out++ = key;
         }
-        // Otherwise, or for non-random access iterator, heapify one-by-one, O(m log(n + m))
-        size_type start_pos_ = this->size();
-        for (; first != last; ++first, ++start_pos_) {
-            const auto key = this->next_key;
-            this->insert_all_noheapify(key, start_pos_, std::forward<decltype(*first)>(*first));
-            this->heapify_up(start_pos_);
-            *out++ = this->next_key++;
+    }
+
+    template <concepts::compatible_iterator<value_type> Iter,
+              concepts::sentinel_or_iter<Iter> Sentinel>
+    constexpr std::pair<key_type, size_type> push_range(Iter first, Sentinel last) {
+        // For exception guarantee, see the above
+        const key_type first_key = this->next_key;
+        const size_type m = push_range_impl(first, last);
+
+        return {first_key, m};
+    }
+
+    template <concepts::compatible_range<value_type> Rng,
+              std::output_iterator<key_type> OpIter>
+    constexpr void push_range(Rng&& rng, OpIter out) {
+        if constexpr (concepts::rvalue_range<Rng&&>) {
+            this->push_range(
+                    std::make_move_iterator(std::ranges::begin(rng)),
+                    std::make_move_iterator(std::ranges::end(rng)), out);
+        } else {
+            this->push_range(std::ranges::begin(rng), std::ranges::end(rng), out);
+        }
+    }
+
+    template <concepts::compatible_range<value_type> Rng>
+    constexpr std::pair<key_type, size_type> push_range(Rng&& rng) {
+        if constexpr (concepts::rvalue_range<Rng&&>) {
+            return this->push_range(
+                    std::make_move_iterator(std::ranges::begin(rng)),
+                    std::make_move_iterator(std::ranges::end(rng)));
+        } else {
+            return this->push_range(std::ranges::begin(rng), std::ranges::end(rng));
         }
     }
 
@@ -376,57 +448,9 @@ public:
         this->next_key = key_type{};
     }
 
-    // Note that if lhs.data_ == rhs.data_ and lhs.keys_ == rhs.keys_, lhs.positions_
-    // and rhs.positions_ must be the same, so they are not compared
-    friend constexpr bool operator== (const indexed_d_ary_heap& lhs, const indexed_d_ary_heap& rhs)
-    noexcept(concepts::nothrow_equality_comparable<value_type> &&
-             concepts::nothrow_equality_comparable<key_type>)
-    requires concepts::equality_comparable<value_type> && concepts::equality_comparable<key_type> {
-        return lhs.size() == rhs.size() &&
-               std::ranges::equal(lhs.data_, rhs.data_) &&
-               std::ranges::equal(lhs.keys_, rhs.keys_);
-    }
-
-    friend constexpr auto operator<=>(const indexed_d_ary_heap& lhs, const indexed_d_ary_heap& rhs)
-    // requires both value_type and key_type to be noexcept comparable
-    noexcept(((std::three_way_comparable<value_type> && concepts::nothrow_three_way_comparable<value_type>)
-         || (!std::three_way_comparable<value_type> && concepts::nothrow_less_comparable<value_type>))
-      &&    ((std::three_way_comparable<key_type> && concepts::nothrow_three_way_comparable<key_type>)
-         || (!std::three_way_comparable<key_type> && concepts::nothrow_less_comparable<key_type>)))
-    requires concepts::less_comparable<value_type> && concepts::less_comparable<key_type> {
-        using common_ordering =
-            std::conditional_t<(std::three_way_comparable<value_type> && std::three_way_comparable<key_type>),
-                                std::common_comparison_category_t<
-                                    std::compare_three_way_result_t<value_type>,
-                                    std::compare_three_way_result_t<key_type>>,
-                                std::weak_ordering>;
-
-        auto cmp = []<typename Seq>(const Seq& lhs, const Seq& rhs) -> common_ordering {
-            if constexpr (std::three_way_comparable<typename Seq::value_type>) {
-                auto res = std::lexicographical_compare_three_way(
-                    lhs.cbegin(), lhs.cend(),
-                    rhs.cbegin(), rhs.cend());
-                return static_cast<common_ordering>(res);
-            }
-            const auto sz = std::min(lhs.size(), rhs.size());
-            for (size_type i = 0; i < sz; ++i) {
-                if (lhs[i] < rhs[i]) {
-                    return common_ordering::less;
-                } if (rhs[i] < lhs[i]) {
-                    return common_ordering::greater;
-                }
-            }
-            // assumes equivalent if !(a < b) && !(b < a)
-            return static_cast<common_ordering>(lhs.size() <=> rhs.size());
-        };
-        if (auto res = cmp(lhs.data_, rhs.data_); res != 0) {
-            return res;
-        }
-        return cmp(lhs.keys_, rhs.keys_);
-    }
-
 };
 
+// Type alias
 template <typename T,
           typename Container = std::vector<T>,
           typename Compare = compare::less<>,
@@ -440,6 +464,13 @@ template <typename T,
           typename KeyType = uint64_t,
           typename KeyStorage = std::vector<KeyType>>
 using indexed_ternary_heap = indexed_d_ary_heap<T, 3, Container, Compare, KeyType, KeyStorage>;
+
+template <typename T,
+          typename Container = std::vector<T>,
+          typename Compare = compare::less<>,
+          typename KeyType = uint64_t,
+          typename KeyStorage = std::vector<KeyType>>
+using indexed_quandary_heap = indexed_d_ary_heap<T, 4, Container, Compare, KeyType, KeyStorage>;
 
 template <typename T,
           typename Container = std::vector<T>,
@@ -458,8 +489,15 @@ template <typename T,
           std::size_t N,
           typename Compare = compare::less<>,
           typename KeyType = uint64_t>
-using static_indexed_heap = indexed_d_ary_heap<T, 4, urlicht::inplace_vector<T, N>,
-                                               Compare, KeyType, urlicht::inplace_vector<KeyType, N>>;
+using static_indexed_heap = indexed_d_ary_heap<T, 4, inplace_vector<T, N>,
+                                               Compare, KeyType, inplace_vector<KeyType, N>>;
 
-}
+// CTAD
+template <typename T>
+indexed_d_ary_heap(std::initializer_list<T>) -> indexed_d_ary_heap<T>;
+
+template <concepts::random_access_container Container>
+indexed_d_ary_heap(Container) -> indexed_d_ary_heap<typename Container::value_type>;
+
+} // namespace urlicht
 #endif //INDEXED_DHEAP_H
