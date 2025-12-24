@@ -1,0 +1,11 @@
+Language:        Cpp
+Standard:        c++20
+
+Checks: >
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-missing-std-forward, 
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  readability-*
