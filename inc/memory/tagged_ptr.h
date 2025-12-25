@@ -144,7 +144,24 @@ namespace urlicht {
             return tmp;
         }
 
-        // Assign raw pointer (keep current tag). Non-owning only.
+        // Replaces the old pointer and returns it. Keeps current tag.
+        [[nodiscard]] constexpr pointer replace_ptr(pointer new_ptr) noexcept {
+            auto tmp = get();
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr) | static_cast<uintptr_t>(tag());
+            return tmp;
+        }
+
+        // Sets new pointer, delete the current one. Keeps current tag.
+        constexpr void set_ptr(const pointer new_ptr)
+        noexcept(!IS_OWNING || std::is_nothrow_invocable_v<deleter_type, pointer>) {
+            auto tmp = get();
+            ptr_ = std::bit_cast<uintptr_t>(new_ptr) | static_cast<uintptr_t>(tag());
+            if constexpr (IS_OWNING) {
+                if (tmp) std::invoke(deleter_, tmp);
+            }
+        }
+
+        // Assigns raw pointer (keeps current tag). Non-owning only.
         constexpr tagged_ptr& operator= (const pointer other) noexcept
         requires (!IS_OWNING) {
             ptr_ = std::bit_cast<uintptr_t>(other) | static_cast<uintptr_t>(tag());
@@ -157,7 +174,7 @@ namespace urlicht {
             const auto tmp = get();
             ptr_ &= TAG_MASK;
             if constexpr (IS_OWNING) {
-                if (tmp) get_deleter()(tmp);
+                if (tmp) std::invoke(deleter_, tmp);
             }
         }
 
@@ -190,7 +207,7 @@ namespace urlicht {
         //////////////////////////////////////////////
 
         // Releases the pointer and clears the tag
-        [[nodiscard]] constexpr pointer release_and_clear() {
+        [[nodiscard]] constexpr pointer release_and_clear() noexcept {
             const auto tmp = get();
             ptr_ = 0;
             return tmp;
@@ -201,7 +218,7 @@ namespace urlicht {
             const auto tmp = get();
             ptr_ = 0;
             if constexpr (IS_OWNING) {
-                if (tmp) get_deleter()(tmp);
+                if (tmp) std::invoke(deleter_, tmp);
             }
         }
 
@@ -212,18 +229,14 @@ namespace urlicht {
             return release_and_clear();
         }
 
-        // For owning tagged_ptr, the pointer is deleted
         constexpr void reset()
         noexcept(std::is_nothrow_invocable_v<deleter_type, pointer>)
         requires (IS_OWNING) {
             const auto tmp = get();
             ptr_ = 0;
-            if (tmp) {
-                get_deleter()(tmp);
-            }
+            if (tmp) std::invoke(deleter_, tmp);
         }
 
-        //
         constexpr pointer reset(const pointer new_ptr) noexcept
         requires (!IS_OWNING) {
             auto tmp = get();
@@ -236,9 +249,7 @@ namespace urlicht {
         requires (IS_OWNING) {
             auto tmp = get();
             ptr_ = std::bit_cast<uintptr_t>(new_ptr);
-            if (tmp) {
-                get_deleter()(tmp);
-            }
+            if (tmp) std::invoke(deleter_, tmp);
         }
 
         constexpr pointer reset(const pointer new_ptr, const tag_type tag) noexcept
@@ -255,9 +266,7 @@ namespace urlicht {
             auto tmp = get();
             ptr_ = std::bit_cast<uintptr_t>(new_ptr);
             set_tag(tag);
-            if (tmp) {
-                get_deleter()(tmp);
-            }
+            if (tmp) std::invoke(deleter_, tmp);
         }
 
         /************************* OBSERVERS *************************/
@@ -529,4 +538,3 @@ namespace std {
 } // namespace std
 
     #endif //TAGGED_PTR_H
-
