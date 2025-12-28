@@ -46,7 +46,7 @@ namespace urlicht {
         static constexpr uintptr_t TAG_MASK = ~PTR_MASK;
 
         uintptr_t ptr_{};
-        [[no_unique_address]] deleter_type deleter_;
+        [[no_unique_address]] deleter_type deleter_{};
 
     public:
         using tag_type =
@@ -66,7 +66,7 @@ namespace urlicht {
         }
 
         /************************* CONSTRUCTORS *************************/
-        constexpr tagged_ptr() noexcept = default;
+        constexpr tagged_ptr() noexcept requires std::default_initializable<deleter_type> = default;
 
         // Value constructor - from a raw pointer
         explicit constexpr tagged_ptr(const pointer ptr) noexcept
@@ -145,7 +145,7 @@ namespace urlicht {
         }
 
         // Replaces the old pointer and returns it. Keeps current tag.
-        [[nodiscard]] constexpr pointer replace_ptr(pointer new_ptr) noexcept {
+        [[nodiscard]] constexpr pointer exchange_ptr(pointer new_ptr) noexcept {
             auto tmp = get();
             ptr_ = std::bit_cast<uintptr_t>(new_ptr) | static_cast<uintptr_t>(tag());
             return tmp;
@@ -474,8 +474,7 @@ namespace std {
     // std::format
     template <typename T, bool IS_OWNING, typename Deleter, typename CharT>
     struct formatter<urlicht::tagged_ptr<T, IS_OWNING, Deleter>, CharT>
-      : std::formatter<uintptr_t, CharT>
-    {
+      : std::formatter<uintptr_t, CharT> {
         template <typename FormatContext>
         auto format(const urlicht::tagged_ptr<T, IS_OWNING, Deleter>& p,
                     FormatContext& ctx) const {
