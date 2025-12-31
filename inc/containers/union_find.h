@@ -9,6 +9,60 @@
 #include "urlicht/concepts_utility.h"
 #include "urlicht/container/inplace_vector.h"
 
+/******************************* SYNOPSIS ********************************
+    Base class (protected helpers)
+    - const_reference get_ensured_root(const_reference) const
+    - const_reference get_ensured_root_and_compress(const_reference)
+    - void unite_existing_roots(const_reference root_x, const_reference root_y)
+
+    Base class (public)
+    - bool contains(const_reference) const noexcept
+    - size_type set_size(const_reference) const noexcept    // only when TrackSize = true
+    - bool is_root(const_reference) const noexcept
+    - void reset_all()
+
+    Map-backed specific (public)
+    - template<Key>                 bool try_emplace(Key&&)
+    - template <InputIt, Sentinel>  void insert(InputIt first, Sentinel last)
+    - template <U>                  void insert(std::initializer_list<U>)
+    - template <Rng>                void insert_range(Rng&&)
+
+    Array-backed specific (public)
+    - void resize(size_type)
+
+    Derived class (public)
+    - const_reference find_or_insert(const_reference)
+    - const_reference unchecked_find(const_reference)
+    - const_reference unchecked_find(const_reference) const
+    - void unite_new(const_reference, const_reference)
+    - bool try_unite(const_reference, const_reference)
+    - void unchecked_unite(const_reference, const_reference)
+    - size_type set_count() const noexcept
+    - bool same_set(const_reference, const_reference) const noexcept
+
+    Iteration (Public, const-only)
+    - const_iterator begin() const noexcept
+    - const_iterator end() const noexcept
+    - const_reverse_iterator rbegin() const noexcept
+    - const_reverse_iterator rend() const noexcept
+    - const_iterator cbegin() const noexcept
+    - const_iterator cend() const noexcept
+    - const_reverse_iterator crbegin() const noexcept
+    - const_reverse_iterator crend() const noexcept
+
+    Capacity (Public)
+    - bool empty() const noexcept
+    - size_type size() const noexcept
+    - std::size_t ssize() const noexcept
+    - size_type max_size() const noexcept
+    - size_type capacity() const noexcept                     // when available
+    - void reserve(size_type)                                 // when reservable
+
+    Utilities (Public)
+    - void clear() noexcept                                   // when supported by KeyEqual
+    - void swap(basic_union_find&) noexcept                   // when swappable
+**************************************************************************/
+
 namespace urlicht {
     namespace detail {
         /********************** UF CONCEPTS CHECKS AND DEFAULT TYPES *********************/
@@ -21,12 +75,12 @@ namespace urlicht {
                 std::same_as<typename Cont::key_type, T>)
         // random_access_container -> value type must be unsigned integral
         ||  (concepts::random_access_container<Cont> &&
-                std::unsigned_integral<T> &&
+                std::integral<T> &&
                 std::same_as<typename Cont::value_type, T>);
 
         template <typename T>
         using default_parent_storage_t =
-            std::conditional_t<std::unsigned_integral<T>, std::vector<T>, std::unordered_map<T, T>>;
+            std::conditional_t<std::integral<T>, std::vector<T>, std::unordered_map<T, T>>;
 
         // If TrackSize is false, then size storage can be whatever type.
         // Otherwise, size storage must match parent storage
@@ -35,10 +89,10 @@ namespace urlicht {
             !TrackSize || (
                 (concepts::unordered_map<ParentStorage> && concepts::unordered_map<SizeStorage> &&
                  std::same_as<typename SizeStorage::key_type, T> &&
-                 std::unsigned_integral<typename SizeStorage::mapped_type>)
+                 std::integral<typename SizeStorage::mapped_type>)
             ||  (concepts::random_access_container<ParentStorage> &&
                  concepts::random_access_container<SizeStorage> &&
-                 std::unsigned_integral<typename SizeStorage::value_type>)
+                 std::integral<typename SizeStorage::value_type>)
             );
 
         // Default size storage binds mapped/value types to ParentStorage::size_type.
@@ -55,38 +109,20 @@ namespace urlicht {
         template <typename T, bool TrackSize, typename SizeStorage>
         using adaptive_size_storage_t = std::conditional_t<TrackSize, SizeStorage, std::monostate>;
 
-        /******************************* SYNOPSIS *******************************/
-        /*   Common methods provided by the base classes:  */
-        // const_reference get_ensured_root(const_reference) const          (protected)
-        // const_reference get_ensured_root_and_compress(const_reference)   (protected)
-        // void unite_existing_roots(const_reference, const_reference)      (protected)
-        // bool contains(const_reference) const noexcept
-        // size_type set_size(const_reference) const noexcept
-        // bool is_root(const_reference) const noexcept
-        // void reset_all()
+        // Uses the key_equal type in ParentStorage for unordered_map. Otherwise, defaults to std::equal_to<>
+        template <typename ParentStorage, bool IsMap>
+        struct default_key_equal_impl {
+            using type = std::equal_to<>;
+        };
 
-        /*   Map-based union-find specific methods:   */
-        // bool try_emplace(Key&&)
-        // void insert(InputIt, Sentinel)
-        // void insert(std::initializer_list<U>)
-        // void insert_range(Rng&&)
+        template <typename ParentStorage>
+        struct default_key_equal_impl<ParentStorage, true> {
+            using type = typename ParentStorage::key_equal;
+        };
 
-        /*   Array-based union-find specific methods:   */
-        // void resize(size_type)
-
-        /*   Methods provided by the derived class:   */
-        // const_reference find_or_insert(const_reference)
-        // const_reference unchecked_find(const_reference)
-        // const_reference unchecked_find(const_reference) const
-        // void unite_new(const_reference, const_reference)
-        // bool try_unite(const_reference, const_reference)
-        // void unchecked_unite(const_reference, const_reference)
-        // size_type set_count() const noexcept
-        // bool same_set(const_reference, const_reference) const noexcept
-        // Iterators - const_iterator only
-        // Capecity
-        // void clear()
-        // void swap()
+        template <typename ParentStorage>
+        using default_key_equal_t =
+            typename default_key_equal_impl<ParentStorage, concepts::unordered_map<ParentStorage>>::type;
 
 
         /************************** IMPL FOR MAP-BASED UF *************************/
@@ -98,6 +134,8 @@ namespace urlicht {
             typename SizeStorage,
             typename KeyEqual>
         class map_uf_base_ {
+            static_assert(std::same_as<KeyEqual, typename ParentStorage::key_equal>,
+                "KeyEqual must be the same as the map's key_equal type");
         public:
             // Necessary ones only. Others are defined in the derived union-find class
             using parent_storage = ParentStorage;
@@ -162,16 +200,37 @@ namespace urlicht {
         public:
             /**************** Map-based union-find specific methods *****************/
 
-            constexpr map_uf_base_() noexcept requires std::default_initializable<key_equal> = default;
+            constexpr map_uf_base_() noexcept
+            requires std::default_initializable<key_equal> = default;
+
+            template <concepts::can_construct<key_equal> KeyEq>
+            explicit constexpr map_uf_base_(KeyEq&& key_eq)
+            noexcept(std::is_nothrow_constructible_v<key_equal, KeyEq&&>)
+            : key_equal_{std::forward<KeyEq>(key_eq)} {  }
 
             template <concepts::compatible_iterator<value_type> Iter,
                       concepts::sentinel_or_iter<Iter> Sentinel>
-            constexpr map_uf_base_(Iter first, Sentinel last) {
+            constexpr map_uf_base_(Iter first, Sentinel last)
+            requires std::default_initializable<key_equal>
+            : map_uf_base_(first, last, key_equal{}) {  }
+
+            template <concepts::compatible_iterator<value_type> Iter,
+                      concepts::sentinel_or_iter<Iter> Sentinel,
+                      concepts::can_construct<key_equal> KeyEq>
+            constexpr map_uf_base_(Iter first, Sentinel last, KeyEq&& key_eq)
+            : key_equal_{ std::forward<KeyEq>(key_eq) } {
                 this->insert(first, last);
             }
 
             template <concepts::compatible_range<value_type> Rng>
-            explicit constexpr map_uf_base_(Rng&& rng) {
+            explicit constexpr map_uf_base_(Rng&& rng)
+            requires std::default_initializable<key_equal>
+            : map_uf_base_(std::forward<Rng>(rng), key_equal{}) {  }
+
+            template <concepts::compatible_range<value_type> Rng,
+                      concepts::can_construct<key_equal> KeyEq>
+            constexpr map_uf_base_(Rng&& rng, KeyEq&& key_eq)
+            : key_equal_{ std::forward<KeyEq>(key_eq) } {
                 this->insert_range(std::forward<Rng>(rng));
             }
 
@@ -212,7 +271,7 @@ namespace urlicht {
             template <typename Key>
             requires TrackSize && std::constructible_from<value_type, Key&&>
             constexpr bool try_emplace(Key&& key) {
-                // Strong exception guarentee
+                // Strong exception guarantee
                 bool p_done = false;
                 typename parent_storage::iterator p_it;
                 try {
@@ -242,6 +301,8 @@ namespace urlicht {
                         this->sizes_.reserve(m + n);
                     }
                 }
+                // Basic exception guarantee - takes in as many inputs as possible until it throws
+                // Strong exception guarantee for each input - see try_emplace
                 for (; first != last; ++first) {
                     this->try_emplace(*first);
                 }
@@ -278,6 +339,18 @@ namespace urlicht {
             [[nodiscard]] constexpr bool is_root(const value_type& x) const
             noexcept(std::is_nothrow_invocable_v<key_equal, const value_type&, const value_type&>) {
                 return this->contains(x) && this->key_equal_(x, this->parents_.find(x)->second);
+            }
+
+            constexpr void reset_all() {
+                for (auto& it : this->parents_) {
+                    it.second = it.first;
+                }
+                if constexpr (TrackSize) {
+                    for (auto& it : this->sizes_) {
+                        it.second = 1U;
+                    }
+                }
+                this->set_count_ = this->parents_.size();
             }
 
         };  // class map_uf_base_
@@ -353,8 +426,9 @@ namespace urlicht {
             requires std::default_initializable<key_equal>
             : array_uf_base_(n, KeyEqual{}) {   }
 
-            constexpr array_uf_base_(const size_type n, key_equal eq)
-            : parents_(n), set_count_{n}, key_equal_{ std::move(eq) } {
+            template <concepts::can_construct<key_equal> KeyEq>
+            constexpr array_uf_base_(const size_type n, KeyEq&& eq)
+            : parents_(n), set_count_{n}, key_equal_{ std::forward<KeyEq>(eq) } {
                 std::iota(parents_.begin(), parents_.end(), 0);
                 if constexpr (TrackSize) {
                     sizes_.assign(n, 1);
@@ -391,7 +465,7 @@ namespace urlicht {
                 }
                 this->parents_.resize(n);
                 // parents_[i] = i
-                std::iota(this->parents_.begin() + old_size, this->parents_.begin() + n, old_size);
+                std::iota(this->parents_.begin() + old_size, this->parents_.end(), old_size);
                 this->set_count_ += n - old_size;
             }
 
@@ -411,14 +485,18 @@ namespace urlicht {
                     throw;
                 }
                 // parents_[i] = i
-                std::iota(this->parents_.begin() + old_size, this->parents_.begin() + n, old_size);
+                std::iota(this->parents_.begin() + old_size, this->parents_.end(), old_size);
                 // sizes_[i] = 1
-                std::fill(this->sizes_.begin() + old_size, this->sizes_.begin() + n, 1);
+                std::fill(this->sizes_.begin() + old_size, this->sizes_.end(), 1);
                 this->set_count_ += n - old_size;
             }
 
             [[nodiscard]] constexpr bool contains(value_type x) const noexcept {
-                return x >= 0U && x < this->parents_.size();
+                if constexpr (std::signed_integral<value_type>) {
+                    return x >= 0U && x < this->parents_.size();
+                } else {
+                    return x < this->parents_.size();
+                }
             }
 
             [[nodiscard]] constexpr size_type set_size(value_type x) const noexcept
@@ -434,6 +512,13 @@ namespace urlicht {
                 return this->contains(x) && this->key_equal_(x, this->parents_[x]);
             }
 
+            constexpr void reset_all() noexcept {
+                std::iota(this->parents_.begin(), this->parents_.end(), 0);
+                if constexpr (TrackSize) {
+                    std::fill(this->sizes_.begin(), this->sizes_.end(), 1);
+                }
+                this->set_count_ = this->parents_.size();
+            }
         };
 
         template <typename T, bool TrackSize, typename ParentStorage, typename SizeStorage, typename KeyEqual>
@@ -449,7 +534,7 @@ namespace urlicht {
         detail::valid_parent_storage<T> ParentStorage = detail::default_parent_storage_t<T>,
         detail::valid_size_storage<T, TrackSize, ParentStorage> SizeStorage =
                 detail::default_size_storage_t<T, TrackSize, ParentStorage>,
-        concepts::comparison_functor<T> KeyEqual = std::equal_to<>>
+        concepts::comparison_functor<T> KeyEqual = detail::default_key_equal_t<ParentStorage>>
     class basic_union_find : public detail::uf_base<T, TrackSize, ParentStorage, SizeStorage, KeyEqual> {
         static_assert(std::is_copy_assignable_v<T>, "Copy assignment is required for path compression and union");
 
@@ -571,7 +656,7 @@ namespace urlicht {
         }
 
         [[nodiscard]] constexpr size_type capacity() const noexcept
-        requires requires() { { this->parents_.capacity() } -> std::same_as<size_type>; } {
+        requires requires() { { this->parents_.capacity() } -> std::convertible_to<size_type>; } {
             return this->parents_.capacity();
         }
 
@@ -625,7 +710,7 @@ namespace urlicht {
             if (TrackSize) {
                 this->sizes_.clear();
             }
-            if constexpr (!std::is_empty_v<key_equal>) {
+            if constexpr (std::is_empty_v<key_equal>) {
                 this->key_equal_.clear();
             }
             this->set_count_ = 0U;
@@ -677,11 +762,11 @@ namespace urlicht {
     /********************** CTAD GUIDEs **********************/
 
     // From unsigned integral T
-    template <std::unsigned_integral T>
+    template <std::integral T>
     basic_union_find(T n) -> basic_union_find<T>;
 
     // From unsigned integral T and a custom comparator
-    template <std::unsigned_integral T, concepts::comparison_functor<T> Comp>
+    template <std::integral T, concepts::comparison_functor<T> Comp>
     basic_union_find(T n, Comp) ->
         basic_union_find<T,
                          true,  // Tracks size
